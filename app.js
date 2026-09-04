@@ -354,18 +354,18 @@ function renderGlasses() {
   if (cached) {
     renderGlassesState("JARVIS", cached.answer, `${formatTime(cached.createdAt)} · ${sessionCode()}`);
   } else {
-    renderGlassesState("JARVIS Reader", "READY", `Connecting · ${sessionCode()}`);
+    renderGlassesState("JARVIS Reader", "CONNECTING", sessionCode());
   }
 
   connectRealtime({
     onStatus: (text, state) => {
       if (state === "error") {
-        renderGlassesState("CONNECTION", "Offline", `${text} · ${sessionCode()}`);
+        renderGlassesState("CONNECTION", "OFFLINE", `${text} · ${sessionCode()}`);
         return;
       }
 
       if (!loadLastAnswer() && text === "Realtime connected") {
-        renderGlassesState("JARVIS Reader", "READY", `Waiting · ${sessionCode()}`);
+        renderGlassesState("JARVIS Reader", "CONNECTED", `Waiting for answer · ${sessionCode()}`);
       }
     },
     onAnswer: ({ answer, createdAt }) => {
