@@ -1,0 +1,2 @@
+[functions.whatsapp-gemini]
+verify_jwt = false
