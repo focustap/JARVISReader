@@ -95,6 +95,11 @@ function topicName() {
   return `jarvis-${config.sessionId}`;
 }
 
+function sessionCode() {
+  const id = config.sessionId || "";
+  return id.slice(-6).toUpperCase();
+}
+
 function hydrateConfigFromUrl() {
   const params = new URLSearchParams(location.search);
   if (!params.has("session") && !params.has("shortcut")) return;
@@ -150,12 +155,15 @@ async function copyGlassesLink() {
   await copyText(url.toString(), "Glasses setup link copied.");
 }
 
-async function copyShortcutSetup() {
+function broadcastEndpoint() {
   const topic = encodeURIComponent(topicName());
-  const endpoint = `${SUPABASE_URL}/realtime/v1/api/broadcast/${topic}/events/answer`;
+  return `${SUPABASE_URL}/realtime/v1/api/broadcast/${topic}/events/answer`;
+}
+
+async function copyShortcutSetup() {
   const setup = [
     "JARVIS Reader Shortcut relay",
-    `URL: ${endpoint}`,
+    `URL: ${broadcastEndpoint()}`,
     "Method: POST",
     `Header apikey: ${SUPABASE_PUBLISHABLE_KEY}`,
     "Header Content-Type: application/json",
@@ -165,6 +173,31 @@ async function copyShortcutSetup() {
   ].join("\n");
 
   await copyText(setup, "Shortcut relay setup copied.");
+}
+
+async function sendTestBroadcast() {
+  setPhoneStatus("Sending test…");
+  try {
+    const response = await fetch(broadcastEndpoint(), {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_PUBLISHABLE_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        answer: `TEST RECEIVED · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      })
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Test failed ${response.status}${detail ? ` · ${detail.slice(0, 80)}` : ""}`);
+    }
+
+    setPhoneStatus(`Test sent · session ${sessionCode()}`, "live");
+  } catch (error) {
+    setPhoneStatus(error.message || "Test failed", "error");
+  }
 }
 
 function setPhoneStatus(text, state = "") {
@@ -272,6 +305,7 @@ function renderPhone() {
       </div>
 
       <button id="answerButton" class="primary">PROCESS LATEST PHOTO</button>
+      <button id="sendTest" class="secondary" style="margin-top:12px">SEND TEST TO GLASSES</button>
       <button id="copyGlassesLink" class="secondary" style="margin-top:12px">COPY GLASSES LINK</button>
       <button id="copyShortcutSetup" class="secondary" style="margin-top:12px">COPY SHORTCUT SETUP</button>
 
@@ -283,7 +317,7 @@ function renderPhone() {
       </div>
 
       <div class="row" style="margin-top:16px">
-        <span class="small">Phone mode · no polling</span>
+        <span class="small">Session ${escapeHtml(sessionCode())} · no polling</span>
         <a class="small link-button" href="?mode=glasses">Preview glasses view</a>
       </div>
     </section>
@@ -291,13 +325,14 @@ function renderPhone() {
 
   document.querySelector("#settingsButton").addEventListener("click", openSettings);
   document.querySelector("#answerButton").addEventListener("click", launchShortcut);
+  document.querySelector("#sendTest").addEventListener("click", sendTestBroadcast);
   document.querySelector("#copyGlassesLink").addEventListener("click", copyGlassesLink);
   document.querySelector("#copyShortcutSetup").addEventListener("click", copyShortcutSetup);
 
   connectRealtime({
-    onStatus: setPhoneStatus,
+    onStatus: (text, state) => setPhoneStatus(`${text} · session ${sessionCode()}`, state),
     onAnswer: ({ createdAt }) => {
-      setPhoneStatus(`Answer received ${formatTime(createdAt)}.`, "live");
+      setPhoneStatus(`Answer received ${formatTime(createdAt)} · session ${sessionCode()}`, "live");
     }
   });
 }
@@ -317,24 +352,24 @@ function renderGlasses() {
   const cached = loadLastAnswer();
 
   if (cached) {
-    renderGlassesState("JARVIS", cached.answer, formatTime(cached.createdAt));
+    renderGlassesState("JARVIS", cached.answer, `${formatTime(cached.createdAt)} · ${sessionCode()}`);
   } else {
-    renderGlassesState("JARVIS Reader", "READY", "Connecting Realtime…");
+    renderGlassesState("JARVIS Reader", "READY", `Connecting · ${sessionCode()}`);
   }
 
   connectRealtime({
     onStatus: (text, state) => {
       if (state === "error") {
-        renderGlassesState("CONNECTION", "Offline", text);
+        renderGlassesState("CONNECTION", "Offline", `${text} · ${sessionCode()}`);
         return;
       }
 
       if (!loadLastAnswer() && text === "Realtime connected") {
-        renderGlassesState("JARVIS Reader", "READY", "Waiting for answer");
+        renderGlassesState("JARVIS Reader", "READY", `Waiting · ${sessionCode()}`);
       }
     },
     onAnswer: ({ answer, createdAt }) => {
-      renderGlassesState("JARVIS", answer, formatTime(createdAt));
+      renderGlassesState("JARVIS", answer, `${formatTime(createdAt)} · ${sessionCode()}`);
     }
   });
 }
