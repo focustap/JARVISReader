@@ -1,4 +1,4 @@
-const CACHE = "jarvis-reader-v4";
+const CACHE = "jarvis-reader-v5";
 const ASSETS = [
   "./",
   "./?mode=phone",
