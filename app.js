@@ -1,18 +1,17 @@
-const STORAGE_KEY = "jarvisReaderConfigV1";
+const STORAGE_KEY = "jarvisReaderConfigV2";
 const app = document.querySelector("#app");
 const settingsDialog = document.querySelector("#settingsDialog");
 const settingsForm = document.querySelector("#settingsForm");
 
 const defaultConfig = {
-  supabaseUrl: "",
-  supabaseKey: "",
+  relayUrl: "",
+  relayToken: "",
   sessionId: "jarvis-ben",
   shortcutName: "JARVIS Reader"
 };
 
 let config = loadConfig();
 let pollTimer = null;
-let latestResponseId = null;
 
 function loadConfig() {
   try {
@@ -28,63 +27,61 @@ function saveConfig(next) {
 }
 
 function getMode() {
-  const mode = new URLSearchParams(location.search).get("mode");
-  return mode === "glasses" ? "glasses" : "phone";
-}
-
-function normalizeBaseUrl(url) {
-  return (url || "").trim().replace(/\/+$/, "");
+  return new URLSearchParams(location.search).get("mode") === "glasses" ? "glasses" : "phone";
 }
 
 function hasRelayConfig() {
-  return Boolean(config.supabaseUrl && config.supabaseKey && config.sessionId);
+  return Boolean(config.relayUrl && config.sessionId);
+}
+
+function normalizeUrl(url) {
+  return (url || "").trim().replace(/\/+$/, "");
 }
 
 function hydrateConfigFromUrl() {
   const params = new URLSearchParams(location.search);
-  const imported = {
-    supabaseUrl: params.get("sb") || config.supabaseUrl,
-    supabaseKey: params.get("key") || config.supabaseKey,
+  const keys = ["relay", "token", "session", "shortcut"];
+  if (!keys.some((key) => params.has(key))) return;
+
+  saveConfig({
+    relayUrl: params.get("relay") || config.relayUrl,
+    relayToken: params.get("token") || config.relayToken,
     sessionId: params.get("session") || config.sessionId,
     shortcutName: params.get("shortcut") || config.shortcutName
-  };
+  });
 
-  if (params.has("sb") || params.has("key") || params.has("session") || params.has("shortcut")) {
-    saveConfig(imported);
-    ["sb", "key", "session", "shortcut"].forEach((key) => params.delete(key));
-    const query = params.toString();
-    history.replaceState({}, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash}`);
-  }
+  keys.forEach((key) => params.delete(key));
+  const query = params.toString();
+  history.replaceState({}, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash}`);
 }
 
-function supabaseHeaders() {
-  return {
-    apikey: config.supabaseKey,
-    Authorization: `Bearer ${config.supabaseKey}`,
-    "Content-Type": "application/json"
-  };
+function relayHeaders() {
+  const headers = { Accept: "application/json" };
+  if (config.relayToken) headers.Authorization = `Bearer ${config.relayToken}`;
+  return headers;
 }
 
 async function fetchLatestResponse() {
   if (!hasRelayConfig()) return null;
+  const url = new URL(`${normalizeUrl(config.relayUrl)}/latest`);
+  url.searchParams.set("session", config.sessionId);
 
-  const base = normalizeBaseUrl(config.supabaseUrl);
-  const session = encodeURIComponent(config.sessionId);
-  const url = `${base}/rest/v1/jarvis_responses?select=id,answer,created_at&session_id=eq.${session}&order=created_at.desc&limit=1`;
-  const response = await fetch(url, { headers: supabaseHeaders(), cache: "no-store" });
+  const response = await fetch(url, {
+    headers: relayHeaders(),
+    cache: "no-store"
+  });
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`Relay ${response.status}${detail ? `: ${detail}` : ""}`);
-  }
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Relay ${response.status}`);
 
-  const rows = await response.json();
-  return rows[0] || null;
+  const data = await response.json();
+  if (!data || typeof data.answer !== "string") return null;
+  return data;
 }
 
 function openSettings() {
-  document.querySelector("#supabaseUrl").value = config.supabaseUrl;
-  document.querySelector("#supabaseKey").value = config.supabaseKey;
+  document.querySelector("#relayUrl").value = config.relayUrl;
+  document.querySelector("#relayToken").value = config.relayToken;
   document.querySelector("#sessionId").value = config.sessionId;
   document.querySelector("#shortcutName").value = config.shortcutName;
   settingsDialog.showModal();
@@ -94,8 +91,8 @@ function wireSettings() {
   settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
     saveConfig({
-      supabaseUrl: document.querySelector("#supabaseUrl").value.trim(),
-      supabaseKey: document.querySelector("#supabaseKey").value.trim(),
+      relayUrl: document.querySelector("#relayUrl").value.trim(),
+      relayToken: document.querySelector("#relayToken").value.trim(),
       sessionId: document.querySelector("#sessionId").value.trim() || defaultConfig.sessionId,
       shortcutName: document.querySelector("#shortcutName").value.trim() || defaultConfig.shortcutName
     });
@@ -110,21 +107,19 @@ function launchShortcut() {
 }
 
 async function copyGlassesLink() {
-  if (!hasRelayConfig()) {
-    openSettings();
-    return;
-  }
-
   const url = new URL(location.href);
   url.search = "";
   url.searchParams.set("mode", "glasses");
-  url.searchParams.set("sb", config.supabaseUrl);
-  url.searchParams.set("key", config.supabaseKey);
-  url.searchParams.set("session", config.sessionId);
+
+  if (hasRelayConfig()) {
+    url.searchParams.set("relay", config.relayUrl);
+    if (config.relayToken) url.searchParams.set("token", config.relayToken);
+    url.searchParams.set("session", config.sessionId);
+  }
 
   try {
     await navigator.clipboard.writeText(url.toString());
-    setPhoneStatus("Glasses setup link copied. Open it once on the glasses.", "live");
+    setPhoneStatus("Glasses link copied.", "live");
   } catch {
     prompt("Copy this glasses URL:", url.toString());
   }
@@ -139,18 +134,17 @@ function setPhoneStatus(text, state = "") {
 
 async function refreshPhoneStatus() {
   if (!hasRelayConfig()) {
-    setPhoneStatus("Connect Supabase before using the relay.");
+    setPhoneStatus("Frontend ready. Relay not configured yet.");
     return;
   }
 
   try {
     const row = await fetchLatestResponse();
     if (!row) {
-      setPhoneStatus("Connected. Waiting for the first response.", "live");
+      setPhoneStatus("Relay connected. Waiting for first answer.", "live");
       return;
     }
-    const stamp = new Date(row.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    setPhoneStatus(`Connected. Last response ${stamp}.`, "live");
+    setPhoneStatus("Relay connected.", "live");
   } catch (error) {
     setPhoneStatus(error.message, "error");
   }
@@ -175,16 +169,16 @@ function renderPhone() {
       <div class="hero">
         <p class="state">LATEST GLASSES PHOTO</p>
         <p class="headline">Ready.</p>
-        <p class="subtext">Take a photo with your glasses, then run the Shortcut from here.</p>
+        <p class="subtext">Take a photo with your glasses, then run the JARVIS Reader Shortcut.</p>
       </div>
 
       <button id="answerButton" class="primary">PROCESS LATEST PHOTO</button>
-      <button id="copyGlassesLink" class="secondary" style="margin-top:12px">COPY GLASSES SETUP LINK</button>
+      <button id="copyGlassesLink" class="secondary" style="margin-top:12px">COPY GLASSES LINK</button>
 
       <div class="status-card status-row">
         <div class="row" style="justify-content:flex-start">
           <span id="phoneStatusDot" class="status-dot"></span>
-          <span id="phoneStatusText">Checking connection…</span>
+          <span id="phoneStatusText">Checking…</span>
         </div>
       </div>
 
@@ -198,8 +192,18 @@ function renderPhone() {
   document.querySelector("#settingsButton").addEventListener("click", openSettings);
   document.querySelector("#answerButton").addEventListener("click", launchShortcut);
   document.querySelector("#copyGlassesLink").addEventListener("click", copyGlassesLink);
+
   refreshPhoneStatus();
   pollTimer = setInterval(refreshPhoneStatus, 7000);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function renderGlassesState(label, answer, meta = "") {
@@ -213,39 +217,31 @@ function renderGlassesState(label, answer, meta = "") {
   `;
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
 async function refreshGlasses() {
   if (!hasRelayConfig()) {
-    renderGlassesState("JARVIS Reader", "Setup needed", "Open the copied glasses setup URL once.");
+    renderGlassesState("JARVIS Reader", "READY", "Frontend only — relay not configured");
     return;
   }
 
   try {
     const row = await fetchLatestResponse();
     if (!row) {
-      renderGlassesState("JARVIS Reader", "READY", "Waiting for a response");
+      renderGlassesState("JARVIS Reader", "READY", "Waiting for answer");
       return;
     }
 
-    if (latestResponseId !== row.id) latestResponseId = row.id;
-    const stamp = new Date(row.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    renderGlassesState("JARVIS", row.answer || "No answer returned", stamp);
-  } catch (error) {
+    const meta = row.createdAt
+      ? new Date(row.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : "";
+    renderGlassesState("JARVIS", row.answer, meta);
+  } catch {
     renderGlassesState("CONNECTION", "Offline", "Check relay settings");
   }
 }
 
 function renderGlasses() {
   clearInterval(pollTimer);
-  renderGlassesState("JARVIS Reader", "READY", hasRelayConfig() ? "Connecting…" : "Setup needed");
+  renderGlassesState("JARVIS Reader", "READY", hasRelayConfig() ? "Connecting…" : "Frontend only");
   refreshGlasses();
   pollTimer = setInterval(refreshGlasses, 1500);
 }
