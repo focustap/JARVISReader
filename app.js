@@ -75,7 +75,20 @@ function loadLastAnswer() {
 }
 
 function getMode() {
-  return new URLSearchParams(location.search).get("mode") === "glasses" ? "glasses" : "phone";
+  const requested = new URLSearchParams(location.search).get("mode");
+  if (requested === "glasses") return "glasses";
+  if (requested === "phone") return "phone";
+
+  const width = window.innerWidth || screen.width || 0;
+  const height = window.innerHeight || screen.height || 0;
+  const looksLikeGlasses =
+    width > 0 &&
+    height > 0 &&
+    width <= 700 &&
+    height <= 700 &&
+    Math.abs(width - height) <= 180;
+
+  return looksLikeGlasses ? "glasses" : "phone";
 }
 
 function topicName() {
