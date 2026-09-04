@@ -20,29 +20,24 @@
       <header>
         <div>
           <p class="eyebrow">JARVIS Reader</p>
-          <h2>Connection</h2>
+          <h2>Settings</h2>
         </div>
         <button class="icon-button" value="cancel" aria-label="Close settings">×</button>
       </header>
 
       <label>
-        Supabase project URL
-        <input id="supabaseUrl" type="url" inputmode="url" placeholder="https://xxxx.supabase.co" autocomplete="off" />
+        Relay URL
+        <input id="relayUrl" type="url" inputmode="url" placeholder="https://your-relay.example" autocomplete="off" />
       </label>
 
       <label>
-        Publishable / anon key
-        <textarea id="supabaseKey" rows="3" placeholder="sb_publishable_… or anon key" autocomplete="off"></textarea>
+        Relay token
+        <input id="relayToken" type="password" placeholder="optional token" autocomplete="off" />
       </label>
 
       <label>
         Session code
         <input id="sessionId" type="text" placeholder="jarvis-ben" autocomplete="off" />
-      </label>
-
-      <label>
-        Relay secret
-        <input id="relaySecret" type="password" placeholder="Auto-generated if blank" autocomplete="off" />
       </label>
 
       <label>
