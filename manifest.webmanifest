@@ -2,12 +2,11 @@
   "name": "JARVIS Reader",
   "short_name": "JARVIS",
   "description": "Phone controller and glasses display for JARVIS Reader.",
-  "start_url": "./?mode=phone",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#05070a",
   "theme_color": "#05070a",
-  "orientation": "portrait",
   "icons": [
     {
       "src": "./icon.svg",
