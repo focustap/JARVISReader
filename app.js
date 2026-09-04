@@ -1,10 +1,23 @@
-const STORAGE_KEY = "jarvisReaderConfigV3";
+const STORAGE_KEY = "jarvisReaderConfigV4";
+const LAST_ANSWER_PREFIX = "jarvisReaderLastAnswerV1:";
 const SUPABASE_URL = "https://ifslruvbvudjocwqcxmg.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_6LA1DysdfyGw-SyJa0GClQ_c2zSqxVB";
 
 const app = document.querySelector("#app");
 const settingsDialog = document.querySelector("#settingsDialog");
 const settingsForm = document.querySelector("#settingsForm");
+
+const supabaseClient = window.supabase?.createClient(
+  SUPABASE_URL,
+  SUPABASE_PUBLISHABLE_KEY,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
+  }
+);
 
 function createSessionKey() {
   if (crypto?.randomUUID) {
@@ -22,7 +35,7 @@ const defaultConfig = {
 };
 
 let config = loadConfig();
-let pollTimer = null;
+let realtimeChannel = null;
 
 if (!config.sessionId) {
   config.sessionId = createSessionKey();
@@ -42,8 +55,31 @@ function saveConfig(next) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
 }
 
+function lastAnswerKey() {
+  return `${LAST_ANSWER_PREFIX}${config.sessionId}`;
+}
+
+function saveLastAnswer(answer, createdAt = new Date().toISOString()) {
+  const record = { answer, createdAt };
+  localStorage.setItem(lastAnswerKey(), JSON.stringify(record));
+  return record;
+}
+
+function loadLastAnswer() {
+  try {
+    const value = JSON.parse(localStorage.getItem(lastAnswerKey()) || "null");
+    return value && typeof value.answer === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function getMode() {
   return new URLSearchParams(location.search).get("mode") === "glasses" ? "glasses" : "phone";
+}
+
+function topicName() {
+  return `jarvis-${config.sessionId}`;
 }
 
 function hydrateConfigFromUrl() {
@@ -59,39 +95,6 @@ function hydrateConfigFromUrl() {
   params.delete("shortcut");
   const query = params.toString();
   history.replaceState({}, "", `${location.pathname}${query ? `?${query}` : ""}${location.hash}`);
-}
-
-function supabaseHeaders(contentType = false) {
-  const headers = {
-    apikey: SUPABASE_PUBLISHABLE_KEY,
-    Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-    "x-jarvis-session": config.sessionId,
-    Accept: "application/json"
-  };
-
-  if (contentType) headers["Content-Type"] = "application/json";
-  return headers;
-}
-
-async function fetchLatestResponse() {
-  const session = encodeURIComponent(config.sessionId);
-  const url = `${SUPABASE_URL}/rest/v1/jarvis_responses?select=id,answer,created_at&session_id=eq.${session}&order=created_at.desc&limit=1`;
-
-  const response = await fetch(url, {
-    headers: supabaseHeaders(),
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    if (response.status === 404 || detail.includes("jarvis_responses")) {
-      throw new Error("Database setup needed");
-    }
-    throw new Error(`Supabase ${response.status}`);
-  }
-
-  const rows = await response.json();
-  return rows[0] || null;
 }
 
 function openSettings() {
@@ -135,14 +138,20 @@ async function copyGlassesLink() {
 }
 
 async function copyShortcutSetup() {
+  const topic = encodeURIComponent(topicName());
+  const endpoint = `${SUPABASE_URL}/realtime/v1/api/broadcast/${topic}/events/answer`;
   const setup = [
-    `Supabase URL: ${SUPABASE_URL}`,
-    `Publishable key: ${SUPABASE_PUBLISHABLE_KEY}`,
-    `Session key: ${config.sessionId}`,
-    "Table: jarvis_responses"
+    "JARVIS Reader Shortcut relay",
+    `URL: ${endpoint}`,
+    "Method: POST",
+    `Header apikey: ${SUPABASE_PUBLISHABLE_KEY}`,
+    "Header Content-Type: application/json",
+    'JSON body: {"answer":"<ChatGPT result>"}',
+    "",
+    "Use the ChatGPT result variable as the value of answer in Shortcuts."
   ].join("\n");
 
-  await copyText(setup, "Shortcut setup copied.");
+  await copyText(setup, "Shortcut relay setup copied.");
 }
 
 function setPhoneStatus(text, state = "") {
@@ -152,26 +161,83 @@ function setPhoneStatus(text, state = "") {
   if (dot) dot.className = `status-dot ${state}`.trim();
 }
 
-async function refreshPhoneStatus() {
-  try {
-    const row = await fetchLatestResponse();
-    if (!row) {
-      setPhoneStatus("Supabase connected. Waiting for first answer.", "live");
-      return;
-    }
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
-    const stamp = new Date(row.created_at).toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit"
-    });
-    setPhoneStatus(`Supabase connected. Last answer ${stamp}.`, "live");
-  } catch (error) {
-    setPhoneStatus(error.message, "error");
+function formatTime(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function extractBroadcast(message) {
+  const payload = message?.payload ?? message ?? {};
+
+  if (typeof payload === "string") {
+    return { answer: payload, createdAt: new Date().toISOString() };
+  }
+
+  const answer = payload.answer ?? payload.text ?? payload.response ?? "";
+  const createdAt = payload.created_at ?? payload.createdAt ?? new Date().toISOString();
+
+  return {
+    answer: typeof answer === "string" ? answer : JSON.stringify(answer),
+    createdAt
+  };
+}
+
+async function disconnectRealtime() {
+  if (!realtimeChannel || !supabaseClient) return;
+  const channel = realtimeChannel;
+  realtimeChannel = null;
+  try {
+    await supabaseClient.removeChannel(channel);
+  } catch {
+    // A stale socket should never block rendering a new view.
   }
 }
 
+function connectRealtime({ onStatus, onAnswer }) {
+  if (!supabaseClient) {
+    onStatus?.("Realtime library failed to load", "error");
+    return;
+  }
+
+  disconnectRealtime();
+
+  const channel = supabaseClient
+    .channel(topicName(), { config: { private: false } })
+    .on("broadcast", { event: "answer" }, (message) => {
+      const result = extractBroadcast(message);
+      if (!result.answer) return;
+
+      saveLastAnswer(result.answer, result.createdAt);
+      onAnswer?.(result);
+    })
+    .subscribe((status) => {
+      if (channel !== realtimeChannel) return;
+
+      if (status === "SUBSCRIBED") {
+        onStatus?.("Realtime connected", "live");
+      } else if (status === "CHANNEL_ERROR") {
+        onStatus?.("Realtime channel error", "error");
+      } else if (status === "TIMED_OUT") {
+        onStatus?.("Realtime connection timed out", "error");
+      } else if (status === "CLOSED") {
+        onStatus?.("Realtime disconnected");
+      }
+    });
+
+  realtimeChannel = channel;
+}
+
 function renderPhone() {
-  clearInterval(pollTimer);
   app.className = "app-shell";
   app.innerHTML = `
     <section class="panel">
@@ -189,7 +255,7 @@ function renderPhone() {
       <div class="hero">
         <p class="state">LATEST GLASSES PHOTO</p>
         <p class="headline">Ready.</p>
-        <p class="subtext">Take a photo with your glasses, then process the latest photo with the JARVIS Reader Shortcut.</p>
+        <p class="subtext">Take a photo with your glasses, then process it with the JARVIS Reader Shortcut.</p>
       </div>
 
       <button id="answerButton" class="primary">PROCESS LATEST PHOTO</button>
@@ -199,12 +265,12 @@ function renderPhone() {
       <div class="status-card status-row">
         <div class="row" style="justify-content:flex-start">
           <span id="phoneStatusDot" class="status-dot"></span>
-          <span id="phoneStatusText">Checking Supabase…</span>
+          <span id="phoneStatusText">Connecting Realtime…</span>
         </div>
       </div>
 
       <div class="row" style="margin-top:16px">
-        <span class="small">Phone mode</span>
+        <span class="small">Phone mode · no polling</span>
         <a class="small link-button" href="?mode=glasses">Preview glasses view</a>
       </div>
     </section>
@@ -215,17 +281,12 @@ function renderPhone() {
   document.querySelector("#copyGlassesLink").addEventListener("click", copyGlassesLink);
   document.querySelector("#copyShortcutSetup").addEventListener("click", copyShortcutSetup);
 
-  refreshPhoneStatus();
-  pollTimer = setInterval(refreshPhoneStatus, 7000);
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+  connectRealtime({
+    onStatus: setPhoneStatus,
+    onAnswer: ({ createdAt }) => {
+      setPhoneStatus(`Answer received ${formatTime(createdAt)}.`, "live");
+    }
+  });
 }
 
 function renderGlassesState(label, answer, meta = "") {
@@ -239,29 +300,30 @@ function renderGlassesState(label, answer, meta = "") {
   `;
 }
 
-async function refreshGlasses() {
-  try {
-    const row = await fetchLatestResponse();
-    if (!row) {
-      renderGlassesState("JARVIS Reader", "READY", "Waiting for answer");
-      return;
-    }
-
-    const stamp = new Date(row.created_at).toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit"
-    });
-    renderGlassesState("JARVIS", row.answer || "No answer returned", stamp);
-  } catch (error) {
-    renderGlassesState("CONNECTION", "Offline", error.message);
-  }
-}
-
 function renderGlasses() {
-  clearInterval(pollTimer);
-  renderGlassesState("JARVIS Reader", "READY", "Connecting…");
-  refreshGlasses();
-  pollTimer = setInterval(refreshGlasses, 1500);
+  const cached = loadLastAnswer();
+
+  if (cached) {
+    renderGlassesState("JARVIS", cached.answer, formatTime(cached.createdAt));
+  } else {
+    renderGlassesState("JARVIS Reader", "READY", "Connecting Realtime…");
+  }
+
+  connectRealtime({
+    onStatus: (text, state) => {
+      if (state === "error") {
+        renderGlassesState("CONNECTION", "Offline", text);
+        return;
+      }
+
+      if (!loadLastAnswer() && text === "Realtime connected") {
+        renderGlassesState("JARVIS Reader", "READY", "Waiting for answer");
+      }
+    },
+    onAnswer: ({ answer, createdAt }) => {
+      renderGlassesState("JARVIS", answer, formatTime(createdAt));
+    }
+  });
 }
 
 function render() {
@@ -271,6 +333,10 @@ function render() {
 hydrateConfigFromUrl();
 wireSettings();
 render();
+
+addEventListener("pagehide", () => {
+  disconnectRealtime();
+});
 
 if ("serviceWorker" in navigator) {
   addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
