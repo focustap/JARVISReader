@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#05070a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="JARVIS Reader" />
+  <title>JARVIS Reader</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main id="app" class="app-shell" aria-live="polite"></main>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form id="settingsForm" method="dialog">
+      <header>
+        <div>
+          <p class="eyebrow">JARVIS Reader</p>
+          <h2>Connection</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close settings">×</button>
+      </header>
+
+      <label>
+        Supabase project URL
+        <input id="supabaseUrl" type="url" inputmode="url" placeholder="https://xxxx.supabase.co" autocomplete="off" />
+      </label>
+
+      <label>
+        Publishable / anon key
+        <textarea id="supabaseKey" rows="3" placeholder="sb_publishable_… or anon key" autocomplete="off"></textarea>
+      </label>
+
+      <label>
+        Session code
+        <input id="sessionId" type="text" placeholder="jarvis-ben" autocomplete="off" />
+      </label>
+
+      <label>
+        Shortcut name
+        <input id="shortcutName" type="text" value="JARVIS Reader" autocomplete="off" />
+      </label>
+
+      <div class="settings-actions">
+        <button id="saveSettings" class="primary" value="default">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
