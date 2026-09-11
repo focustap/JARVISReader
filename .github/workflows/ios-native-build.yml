@@ -1,0 +1,79 @@
+name: Native iOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - native-ios
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-native-build.yml"
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project JARVISReader.xcodeproj \
+            -scheme JARVISReader \
+            -resolvePackageDependencies
+
+      - name: Build unsigned iPhone app
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project JARVISReader.xcodeproj \
+            -scheme JARVISReader \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/JARVISDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Package unsigned IPA
+        run: |
+          APP="$RUNNER_TEMP/JARVISDerivedData/Build/Products/Release-iphoneos/JARVISReader.app"
+          test -d "$APP"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          zip -qry JARVISReader-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVISReader-unsigned-ipa
+          path: ${{ runner.temp }}/JARVISReader-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
