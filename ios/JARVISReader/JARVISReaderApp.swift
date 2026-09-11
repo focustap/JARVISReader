@@ -18,7 +18,7 @@ struct JARVISReaderApp: App {
             ContentView()
                 .onOpenURL { url in
                     Task {
-                        _ = await Wearables.shared.handleUrl(url)
+                        _ = try? await Wearables.shared.handleUrl(url)
                     }
                 }
         }
