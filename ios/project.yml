@@ -1,0 +1,30 @@
+name: JARVISReader
+options:
+  bundleIdPrefix: com.focustap
+  deploymentTarget:
+    iOS: "17.2"
+packages:
+  MetaWearables:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    exactVersion: 0.9.0
+targets:
+  JARVISReader:
+    type: application
+    platform: iOS
+    sources:
+      - path: JARVISReader
+    info:
+      path: JARVISReader/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISReader
+        PRODUCT_NAME: JARVISReader
+        SWIFT_VERSION: 6.0
+        TARGETED_DEVICE_FAMILY: "1"
+    dependencies:
+      - package: MetaWearables
+        product: MWDATCore
+      - package: MetaWearables
+        product: MWDATCamera
+      - package: MetaWearables
+        product: MWDATDisplay
