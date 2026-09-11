@@ -11,46 +11,57 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 18) {
-                Image(systemName: "eyeglasses")
-                    .font(.system(size: 54))
+            ScrollView {
+                VStack(spacing: 18) {
+                    Image(systemName: "eyeglasses")
+                        .font(.system(size: 54))
 
-                Text("JARVIS Reader")
-                    .font(.largeTitle.bold())
+                    Text("JARVIS Reader")
+                        .font(.largeTitle.bold())
 
-                VStack(spacing: 6) {
-                    Text("SDK state: \(registrationState)")
-                        .font(.headline)
-                    Text("Detected devices: \(deviceCount)")
-                        .font(.subheadline)
+                    VStack(spacing: 6) {
+                        Text("SDK state: \(registrationState)")
+                            .font(.headline)
+                        Text("Detected devices: \(deviceCount)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text(configurationStatus)
+                            .font(.caption)
+                            .foregroundStyle(configurationStatus.contains("FAILED") ? .red : .secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    VStack(spacing: 4) {
+                        Text("Signing Team ID: \(signingTeamID())")
+                        Text("Configured TeamID: \(configuredMWDATValue("TeamID"))")
+                        Text("Configured MetaAppID: \(configuredMWDATValue("MetaAppID"))")
+                    }
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                    Text(status)
+                        .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
-                    Text(configurationStatus)
-                        .font(.caption)
-                        .foregroundStyle(configurationStatus.contains("FAILED") ? .red : .secondary)
+
+                    Button(isRegistering ? "Opening Meta AI…" : "Register / Retry") {
+                        register()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isRegistering)
+
+                    Button("Refresh SDK Status") {
+                        refreshStatus()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Text("If registration stays unavailable, send the SDK state plus the Signing Team ID and Configured TeamID shown above.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-
-                Text(status)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-
-                Button(isRegistering ? "Opening Meta AI…" : "Register / Retry") {
-                    register()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isRegistering)
-
-                Button("Refresh SDK Status") {
-                    refreshStatus()
-                }
-                .buttonStyle(.bordered)
-
-                Text("If registration is unavailable, make sure Developer Mode is enabled for these glasses in Meta AI. If configure() shows FAILED, send me the full error shown above.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                .padding(28)
             }
-            .padding(28)
             .task {
                 refreshStatus()
 
@@ -90,6 +101,42 @@ struct ContentView: View {
     private func refreshStatus() {
         registrationState = label(for: Wearables.shared.registrationState)
         deviceCount = Wearables.shared.devices.count
+    }
+
+    private func configuredMWDATValue(_ key: String) -> String {
+        guard let config = Bundle.main.object(forInfoDictionaryKey: "MWDAT") as? [String: Any],
+              let value = config[key] as? String,
+              !value.isEmpty else {
+            return "<empty>"
+        }
+        return value
+    }
+
+    private func signingTeamID() -> String {
+        guard let profileURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: profileURL),
+              let text = String(data: data, encoding: .isoLatin1) else {
+            return "<not found>"
+        }
+
+        let patterns = [
+            #"<key>com\.apple\.developer\.team-identifier</key>\s*<string>([^<]+)</string>"#,
+            #"<key>TeamIdentifier</key>\s*<array>\s*<string>([^<]+)</string>"#
+        ]
+
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                    in: text,
+                    range: NSRange(text.startIndex..<text.endIndex, in: text)
+                  ),
+                  let range = Range(match.range(at: 1), in: text) else {
+                continue
+            }
+            return String(text[range])
+        }
+
+        return "<not found>"
     }
 
     private func register() {
