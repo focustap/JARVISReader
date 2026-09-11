@@ -2,9 +2,11 @@ import SwiftUI
 import MWDATCore
 
 struct ContentView: View {
+    let configurationStatus: String
+
     @State private var status = "Ready to register with Meta AI"
     @State private var isRegistering = false
-    @State private var registrationState = String(describing: Wearables.shared.registrationState)
+    @State private var registrationState = "Checking…"
     @State private var deviceCount = Wearables.shared.devices.count
 
     var body: some View {
@@ -22,6 +24,10 @@ struct ContentView: View {
                     Text("Detected devices: \(deviceCount)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    Text(configurationStatus)
+                        .font(.caption)
+                        .foregroundStyle(configurationStatus.contains("FAILED") ? .red : .secondary)
+                        .multilineTextAlignment(.center)
                 }
 
                 Text(status)
@@ -39,7 +45,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Text("If Meta AI opens without an approval sheet, return to JARVIS and tell me the SDK state shown above.")
+                Text("If registration is unavailable, make sure Developer Mode is enabled for these glasses in Meta AI. If configure() shows FAILED, send me the full error shown above.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -50,7 +56,7 @@ struct ContentView: View {
 
                 for await state in Wearables.shared.registrationStateStream() {
                     await MainActor.run {
-                        registrationState = String(describing: state)
+                        registrationState = label(for: state)
                         deviceCount = Wearables.shared.devices.count
 
                         switch state {
@@ -63,7 +69,7 @@ struct ContentView: View {
                             status = "Registration is available. Tap Register / Retry."
                             isRegistering = false
                         case .unavailable:
-                            status = "Registration is unavailable. Check Meta AI Developer Mode, glasses connection, and internet."
+                            status = "Registration is unavailable. Meta is not currently exposing a registerable wearable to JARVIS."
                             isRegistering = false
                         }
                     }
@@ -72,8 +78,17 @@ struct ContentView: View {
         }
     }
 
+    private func label(for state: RegistrationState) -> String {
+        switch state {
+        case .registered: return "registered"
+        case .registering: return "registering"
+        case .available: return "available"
+        case .unavailable: return "unavailable"
+        }
+    }
+
     private func refreshStatus() {
-        registrationState = String(describing: Wearables.shared.registrationState)
+        registrationState = label(for: Wearables.shared.registrationState)
         deviceCount = Wearables.shared.devices.count
     }
 
@@ -87,7 +102,7 @@ struct ContentView: View {
                 try await Wearables.shared.startRegistration()
                 await MainActor.run {
                     refreshStatus()
-                    status = "Registration request sent. If Meta AI shows no approval sheet, return here and read the SDK state."
+                    status = "Registration request sent. Return here after Meta AI and check the state above."
                     isRegistering = false
                 }
             } catch let error as RegistrationError {
