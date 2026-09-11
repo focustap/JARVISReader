@@ -15,6 +15,36 @@ targets:
       - path: JARVISReader
     info:
       path: JARVISReader/Info.plist
+      properties:
+        CFBundleDisplayName: JARVIS Reader
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleURLSchemes:
+              - jarvisreader
+        LSApplicationQueriesSchemes:
+          - fb-viewapp
+        UISupportedExternalAccessoryProtocols:
+          - com.meta.ar.wearable
+        UIBackgroundModes:
+          - processing
+          - bluetooth-central
+          - bluetooth-peripheral
+          - external-accessory
+        NSBluetoothAlwaysUsageDescription: JARVIS Reader connects to your Meta glasses to capture images and show answers.
+        NSBluetoothPeripheralUsageDescription: JARVIS Reader uses Bluetooth to communicate with your Meta glasses.
+        NSLocalNetworkUsageDescription: JARVIS Reader uses the local network to communicate with your Meta glasses.
+        NSBonjourServices:
+          - _bonjour._tcp
+        MWDAT:
+          DAMEnabled: true
+          AppLinkURLScheme: jarvisreader://
+          MetaAppID: "0"
+          ClientToken: ""
+          TeamID: CX3DNSA9YG
+          Analytics:
+            OptOut: true
+        UILaunchScreen: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISReader
