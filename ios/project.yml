@@ -17,6 +17,8 @@ targets:
       path: JARVISReader/Info.plist
       properties:
         CFBundleDisplayName: JARVIS Reader
+        CFBundleShortVersionString: "1.0.14"
+        CFBundleVersion: "14"
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
             CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
@@ -49,6 +51,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISReader
         PRODUCT_NAME: JARVISReader
+        MARKETING_VERSION: "1.0.14"
+        CURRENT_PROJECT_VERSION: "14"
         SWIFT_VERSION: 6.0
         TARGETED_DEVICE_FAMILY: "1"
     dependencies:
