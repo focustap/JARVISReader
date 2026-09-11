@@ -52,6 +52,10 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+            } else if controller.isRegistered && controller.cameraPermissionGranted {
+                Text("Selected: \(controller.selectedDeviceName)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity)
@@ -90,14 +94,23 @@ struct ContentView: View {
                     controller.connect()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(controller.isConnecting)
+                .disabled(controller.isConnecting || !controller.hasActiveDevice)
 
-                if controller.deviceCount == 0 {
-                    Text("Camera access is granted. Keep the glasses on and connected in Meta AI; JARVIS will connect automatically when DAT exposes them.")
+                if !controller.hasActiveDevice {
+                    Text(controller.deviceCount == 0
+                         ? "Waiting for Meta to expose your glasses to JARVIS."
+                         : "JARVIS can see Meta devices, but the selected display-capable glasses are not connected yet. Check the device list below.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
+            }
+
+            if controller.requiresFirmwareUpdate {
+                Button("Update Glasses Firmware") {
+                    controller.openFirmwareUpdate()
+                }
+                .buttonStyle(.bordered)
             }
 
             if controller.requiresDATAppUpdate {
@@ -132,13 +145,14 @@ struct ContentView: View {
 
     private var diagnostics: some View {
         DisclosureGroup("Diagnostics / Backend") {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 Group {
                     Text("SDK: \(controller.registrationLabel)")
                     Text("Session: \(controller.sessionLabel)")
                     Text("Stream: \(controller.streamLabel)")
                     Text("Display: \(controller.displayLabel)")
                     Text("Active device: \(controller.hasActiveDevice ? "yes" : "no")")
+                    Text("Selected device: \(controller.selectedDeviceName)")
                     Text(configurationStatus)
                     Text("Signing Team ID: \(signingTeamID())")
                     Text("Configured TeamID: \(configuredMWDATValue("TeamID"))")
@@ -146,6 +160,48 @@ struct ContentView: View {
                 }
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
+
+                Divider()
+
+                Text("Detected devices")
+                    .font(.subheadline.bold())
+
+                if controller.deviceInfos.isEmpty {
+                    Text("No devices found")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(controller.deviceInfos) { device in
+                        Button {
+                            controller.selectDevice(device.identifier)
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: controller.isSelectedDevice(device.identifier)
+                                      ? "checkmark.circle.fill"
+                                      : "circle")
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(device.name)
+                                        .font(.subheadline.bold())
+                                    Text(device.type)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("\(device.statusText) • \(device.compatibilityText) • \(device.supportsDisplay ? "display" : "no display")")
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                    Text(device.identifier)
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.tertiary)
+                                        .textSelection(.enabled)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!device.supportsDisplay)
+                    }
+                }
 
                 Divider()
 
