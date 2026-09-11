@@ -1,4 +1,4 @@
-// JARVIS Reader: WhatsApp -> Gemini Vision -> WhatsApp
+// JARVIS Reader: native glasses / WhatsApp -> Gemini Vision
 // Supabase Edge Function. No database is required.
 
 const encoder = new TextEncoder();
@@ -83,7 +83,6 @@ function collectImageJobs(payload: any): ImageJob[] {
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  // Chunking avoids blowing the JS call stack on camera images.
   let binary = "";
   const chunkSize = 0x8000;
   for (let i = 0; i < bytes.length; i += chunkSize) {
@@ -120,8 +119,7 @@ async function getWhatsAppMedia(mediaId: string): Promise<{ bytes: Uint8Array; m
   }
 
   const bytes = new Uint8Array(await imageResponse.arrayBuffer());
-  const mimeType =
-    metadata.mime_type || imageResponse.headers.get("content-type") || "image/jpeg";
+  const mimeType = metadata.mime_type || imageResponse.headers.get("content-type") || "image/jpeg";
 
   return { bytes, mimeType };
 }
@@ -187,6 +185,42 @@ async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Pro
   return answer;
 }
 
+async function handleNativeImage(req: Request): Promise<Response> {
+  const expectedToken = env("JARVIS_NATIVE_TOKEN", false);
+  if (expectedToken) {
+    const suppliedToken = (req.headers.get("x-jarvis-token") || "").trim();
+    if (suppliedToken !== expectedToken) {
+      return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
+  const mimeType = (req.headers.get("content-type") || "image/jpeg")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+
+  if (!mimeType.startsWith("image/")) {
+    return Response.json({ ok: false, error: "Expected an image body" }, { status: 415 });
+  }
+
+  const bytes = new Uint8Array(await req.arrayBuffer());
+  if (!bytes.length) {
+    return Response.json({ ok: false, error: "Image body was empty" }, { status: 400 });
+  }
+  if (bytes.length > 8 * 1024 * 1024) {
+    return Response.json({ ok: false, error: "Image is too large" }, { status: 413 });
+  }
+
+  try {
+    const answer = await askGemini(bytes, mimeType);
+    return Response.json({ ok: true, answer });
+  } catch (error) {
+    console.error("Native JARVIS request failed", error);
+    const message = error instanceof Error ? error.message : "Unknown Gemini error";
+    return Response.json({ ok: false, error: message }, { status: 502 });
+  }
+}
+
 async function sendWhatsAppText(phoneNumberId: string, to: string, text: string): Promise<void> {
   const accessToken = env("WHATSAPP_ACCESS_TOKEN");
   const body = text.length > 3900 ? `${text.slice(0, 3897)}...` : text;
@@ -232,7 +266,6 @@ async function processImageJob(job: ImageJob): Promise<void> {
   } catch (error) {
     console.error("JARVIS image processing failed", error);
 
-    // If media/Gemini fails, make one best-effort attempt to surface the failure in WhatsApp.
     try {
       await sendWhatsAppText(
         phoneNumberId,
@@ -246,6 +279,10 @@ async function processImageJob(job: ImageJob): Promise<void> {
 }
 
 Deno.serve(async (req: Request) => {
+  if (req.method === "POST" && (req.headers.get("x-jarvis-mode") || "").toLowerCase() === "native") {
+    return handleNativeImage(req);
+  }
+
   // Meta webhook verification handshake.
   if (req.method === "GET") {
     const url = new URL(req.url);
@@ -282,7 +319,6 @@ Deno.serve(async (req: Request) => {
     const payload = JSON.parse(rawBody);
     const jobs = collectImageJobs(payload);
 
-    // Acknowledge Meta immediately; Gemini/media work continues in the background.
     for (const job of jobs) {
       EdgeRuntime.waitUntil(processImageJob(job));
     }
