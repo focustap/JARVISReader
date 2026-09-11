@@ -5,10 +5,40 @@ import MWDATCore
 import MWDATDisplay
 import UIKit
 
+struct JARVISDeviceInfo: Identifiable {
+    let identifier: DeviceIdentifier
+    let name: String
+    let type: String
+    let linkState: LinkState
+    let compatibility: Compatibility
+    let supportsDisplay: Bool
+
+    var id: DeviceIdentifier { identifier }
+
+    var statusText: String {
+        if compatibility == .deviceUpdateRequired {
+            return "Update required"
+        }
+
+        switch linkState {
+        case .disconnected: return "Disconnected"
+        case .connecting: return "Connecting"
+        case .connected: return "Connected"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    var compatibilityText: String {
+        compatibility == .deviceUpdateRequired ? "update required" : "compatible"
+    }
+}
+
 @MainActor
 final class JARVISController: ObservableObject {
     @Published private(set) var registrationState = Wearables.shared.registrationState
     @Published private(set) var deviceCount = Wearables.shared.devices.count
+    @Published private(set) var deviceInfos: [JARVISDeviceInfo] = []
+    @Published private(set) var selectedDeviceIdentifier: DeviceIdentifier?
     @Published private(set) var hasActiveDevice = false
     @Published private(set) var cameraPermissionGranted = false
     @Published private(set) var cameraPermissionChecked = false
@@ -23,6 +53,7 @@ final class JARVISController: ObservableObject {
     @Published private(set) var isRequestingPermission = false
     @Published private(set) var isConnecting = false
     @Published private(set) var requiresDATAppUpdate = false
+    @Published private(set) var requiresFirmwareUpdate = false
     @Published var backendToken: String {
         didSet {
             UserDefaults.standard.set(backendToken, forKey: Self.backendTokenKey)
@@ -33,7 +64,6 @@ final class JARVISController: ObservableObject {
 
     private let wearables: WearablesInterface
     private let backend = JARVISBackendClient()
-    private var deviceSelector: AutoDeviceSelector
 
     private var deviceSession: DeviceSession?
     private var camera: MWDATCamera.Camera?
@@ -41,8 +71,9 @@ final class JARVISController: ObservableObject {
 
     private var registrationTask: Task<Void, Never>?
     private var devicesTask: Task<Void, Never>?
-    private var activeDeviceTask: Task<Void, Never>?
 
+    private var deviceLinkTokens: [DeviceIdentifier: AnyListenerToken] = [:]
+    private var deviceCompatibilityTokens: [DeviceIdentifier: AnyListenerToken] = [:]
     private var sessionStateToken: AnyListenerToken?
     private var sessionErrorToken: AnyListenerToken?
     private var streamStateToken: AnyListenerToken?
@@ -52,13 +83,10 @@ final class JARVISController: ObservableObject {
 
     private var autoConnectWhenDeviceAppears = false
     private var sentReadyCard = false
+    private var lastSessionError: String?
 
     init(wearables: WearablesInterface = Wearables.shared) {
         self.wearables = wearables
-        self.deviceSelector = AutoDeviceSelector(
-            wearables: wearables,
-            filter: { $0.supportsDisplay() }
-        )
         self.backendToken = UserDefaults.standard.string(forKey: Self.backendTokenKey) ?? ""
 
         startObservers()
@@ -71,6 +99,14 @@ final class JARVISController: ObservableObject {
 
     var isReady: Bool {
         sessionState == .started && streamState == .streaming && displayState == .started
+    }
+
+    var selectedDeviceName: String {
+        guard let selectedDeviceIdentifier,
+              let info = deviceInfos.first(where: { $0.identifier == selectedDeviceIdentifier }) else {
+            return "none"
+        }
+        return info.name
     }
 
     var registrationLabel: String {
@@ -118,9 +154,13 @@ final class JARVISController: ObservableObject {
         }
     }
 
+    func isSelectedDevice(_ identifier: DeviceIdentifier) -> Bool {
+        selectedDeviceIdentifier == identifier
+    }
+
     func refresh() {
         registrationState = wearables.registrationState
-        deviceCount = wearables.devices.count
+        updateDevices(Array(wearables.devices))
 
         if registrationState == .registered {
             Task { await refreshCameraPermission() }
@@ -166,7 +206,7 @@ final class JARVISController: ObservableObject {
                 if cameraPermissionGranted {
                     status = "Camera access granted. Looking for your glasses…"
                     autoConnectWhenDeviceAppears = true
-                    deviceCount = wearables.devices.count
+                    updateDevices(Array(wearables.devices))
                     connectIfPossible()
                 } else {
                     status = "Camera permission was not granted."
@@ -177,6 +217,27 @@ final class JARVISController: ObservableObject {
                 status = "Camera permission error: \(error.localizedDescription)"
             }
         }
+    }
+
+    func selectDevice(_ identifier: DeviceIdentifier) {
+        guard let info = deviceInfos.first(where: { $0.identifier == identifier }) else {
+            status = "That device is no longer available."
+            return
+        }
+        guard info.supportsDisplay else {
+            status = "\(info.name) does not expose a glasses display to DAT."
+            return
+        }
+
+        if deviceSession != nil {
+            disconnect()
+        }
+
+        selectedDeviceIdentifier = identifier
+        updateActiveDeviceFlag()
+        status = hasActiveDevice
+            ? "Selected \(info.name). Ready to connect."
+            : "Selected \(info.name). Waiting for it to connect…"
     }
 
     func connect() {
@@ -190,6 +251,7 @@ final class JARVISController: ObservableObject {
         }
 
         autoConnectWhenDeviceAppears = true
+        updateDevices(Array(wearables.devices))
         connectIfPossible()
     }
 
@@ -238,6 +300,16 @@ final class JARVISController: ObservableObject {
         }
     }
 
+    func openFirmwareUpdate() {
+        Task {
+            do {
+                try await wearables.openFirmwareUpdate()
+            } catch {
+                status = "Could not open firmware update: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func startObservers() {
         registrationTask = Task { [weak self] in
             guard let wearables = self?.wearables else { return }
@@ -248,6 +320,7 @@ final class JARVISController: ObservableObject {
                 switch state {
                 case .registered:
                     self.status = "Registered with Meta AI."
+                    self.updateDevices(Array(wearables.devices))
                     await self.refreshCameraPermission()
                 case .registering:
                     self.status = "Registration is in progress…"
@@ -263,25 +336,100 @@ final class JARVISController: ObservableObject {
 
         devicesTask = Task { [weak self] in
             guard let wearables = self?.wearables else { return }
-            for await devices in wearables.devicesStream() {
+            for await deviceIDs in wearables.devicesStream() {
                 guard let self, !Task.isCancelled else { return }
-                self.deviceCount = devices.count
-                if self.autoConnectWhenDeviceAppears {
-                    self.connectIfPossible()
+                self.updateDevices(deviceIDs)
+            }
+        }
+    }
+
+    private func updateDevices(_ deviceIDs: [DeviceIdentifier]) {
+        deviceCount = deviceIDs.count
+        let currentIDs = Set(deviceIDs)
+
+        let removedLinkIDs = deviceLinkTokens.keys.filter { !currentIDs.contains($0) }
+        for id in removedLinkIDs {
+            if let token = deviceLinkTokens.removeValue(forKey: id) {
+                Task { await token.cancel() }
+            }
+        }
+
+        let removedCompatibilityIDs = deviceCompatibilityTokens.keys.filter { !currentIDs.contains($0) }
+        for id in removedCompatibilityIDs {
+            if let token = deviceCompatibilityTokens.removeValue(forKey: id) {
+                Task { await token.cancel() }
+            }
+        }
+
+        var infos: [JARVISDeviceInfo] = []
+        for identifier in deviceIDs {
+            guard let device = wearables.deviceForIdentifier(identifier) else { continue }
+            infos.append(deviceInfo(for: device))
+            ensureDeviceListeners(for: device)
+        }
+        deviceInfos = infos
+        requiresFirmwareUpdate = infos.contains { $0.compatibility == .deviceUpdateRequired }
+
+        let connectedDisplay = infos.first { $0.supportsDisplay && $0.linkState == .connected }
+        let anyDisplay = infos.first { $0.supportsDisplay }
+
+        if let selectedDeviceIdentifier,
+           let selectedInfo = infos.first(where: { $0.identifier == selectedDeviceIdentifier && $0.supportsDisplay }) {
+            if selectedInfo.linkState != .connected, let connectedDisplay {
+                self.selectedDeviceIdentifier = connectedDisplay.identifier
+            }
+        } else {
+            selectedDeviceIdentifier = connectedDisplay?.identifier ?? anyDisplay?.identifier
+        }
+
+        updateActiveDeviceFlag()
+
+        if autoConnectWhenDeviceAppears {
+            connectIfPossible()
+        }
+    }
+
+    private func deviceInfo(for device: Device) -> JARVISDeviceInfo {
+        JARVISDeviceInfo(
+            identifier: device.identifier,
+            name: device.nameOrId(),
+            type: device.deviceType().rawValue,
+            linkState: device.linkState,
+            compatibility: device.compatibility(),
+            supportsDisplay: device.supportsDisplay()
+        )
+    }
+
+    private func ensureDeviceListeners(for device: Device) {
+        let identifier = device.identifier
+
+        if deviceLinkTokens[identifier] == nil {
+            deviceLinkTokens[identifier] = device.addLinkStateListener { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.updateDevices(Array(self.wearables.devices))
                 }
             }
         }
 
-        let selector = deviceSelector
-        activeDeviceTask = Task { [weak self] in
-            for await deviceID in selector.activeDeviceStream() {
-                guard let self, !Task.isCancelled else { return }
-                self.hasActiveDevice = deviceID != nil
-                if self.autoConnectWhenDeviceAppears {
-                    self.connectIfPossible()
+        if deviceCompatibilityTokens[identifier] == nil {
+            deviceCompatibilityTokens[identifier] = device.addCompatibilityListener { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.updateDevices(Array(self.wearables.devices))
                 }
             }
         }
+    }
+
+    private func updateActiveDeviceFlag() {
+        guard let selectedDeviceIdentifier,
+              let info = deviceInfos.first(where: { $0.identifier == selectedDeviceIdentifier }) else {
+            hasActiveDevice = false
+            return
+        }
+
+        hasActiveDevice = info.supportsDisplay && info.linkState == .connected
     }
 
     private func refreshCameraPermission() async {
@@ -297,9 +445,9 @@ final class JARVISController: ObservableObject {
             cameraPermissionGranted = result == .granted
 
             if cameraPermissionGranted && deviceSession == nil {
-                status = deviceCount > 0 || hasActiveDevice
+                status = hasActiveDevice
                     ? "Camera access granted. Ready to connect."
-                    : "Camera access granted. Waiting for glasses…"
+                    : "Camera access granted. Waiting for display-capable glasses…"
             }
         } catch {
             cameraPermissionChecked = true
@@ -317,17 +465,39 @@ final class JARVISController: ObservableObject {
             return
         }
 
-        guard deviceCount > 0 || hasActiveDevice else {
-            status = "Waiting for your Ray-Ban Display glasses…"
+        guard let selectedDeviceIdentifier else {
+            status = deviceCount == 0
+                ? "Waiting for your Meta glasses…"
+                : "No display-capable glasses found. Check the device list below."
+            return
+        }
+
+        guard hasActiveDevice else {
+            let name = deviceInfos.first(where: { $0.identifier == selectedDeviceIdentifier })?.name ?? "selected glasses"
+            status = "Waiting for \(name) to connect…"
+            return
+        }
+
+        guard let selectedInfo = deviceInfos.first(where: { $0.identifier == selectedDeviceIdentifier }) else {
+            status = "Selected glasses disappeared. Refreshing devices…"
+            updateDevices(Array(wearables.devices))
+            return
+        }
+
+        if selectedInfo.compatibility == .deviceUpdateRequired {
+            requiresFirmwareUpdate = true
+            status = "\(selectedInfo.name) needs a firmware update before JARVIS can connect."
             return
         }
 
         isConnecting = true
-        status = "Starting glasses session…"
+        lastSessionError = nil
+        status = "Starting session with \(selectedInfo.name)…"
         requiresDATAppUpdate = false
 
         do {
-            let session = try wearables.createSession(deviceSelector: deviceSelector)
+            let selector = SpecificDeviceSelector(device: selectedDeviceIdentifier)
+            let session = try wearables.createSession(deviceSelector: selector)
             deviceSession = session
             observeSession(session)
             sessionState = .starting
@@ -335,10 +505,12 @@ final class JARVISController: ObservableObject {
         } catch DeviceSessionError.datAppOnTheGlassesUpdateRequired {
             isConnecting = false
             requiresDATAppUpdate = true
+            lastSessionError = DeviceSessionError.datAppOnTheGlassesUpdateRequired.localizedDescription
             status = "The DAT app on the glasses needs an update."
             clearSessionReferences()
         } catch {
             isConnecting = false
+            lastSessionError = error.localizedDescription
             status = "Could not start glasses session: \(error.localizedDescription)"
             clearSessionReferences()
         }
@@ -364,10 +536,13 @@ final class JARVISController: ObservableObject {
         switch state {
         case .started:
             isConnecting = false
+            lastSessionError = nil
             status = "Session connected. Starting camera and display…"
             setupCapabilities(on: session)
         case .stopping:
-            status = "Stopping glasses session…"
+            if lastSessionError == nil {
+                status = "Stopping glasses session…"
+            }
         case .stopped:
             isConnecting = false
             sentReadyCard = false
@@ -375,7 +550,11 @@ final class JARVISController: ObservableObject {
             clearSessionReferences()
             streamState = .stopped
             displayState = .stopped
-            status = "Glasses session stopped."
+            if let lastSessionError {
+                status = "Glasses session error: \(lastSessionError)"
+            } else {
+                status = "Glasses session stopped."
+            }
         case .starting, .idle, .paused:
             break
         }
@@ -384,6 +563,7 @@ final class JARVISController: ObservableObject {
     private func handleSessionError(_ error: DeviceSessionError) {
         isConnecting = false
         requiresDATAppUpdate = error == .datAppOnTheGlassesUpdateRequired
+        lastSessionError = error.localizedDescription
         status = "Glasses session error: \(error.localizedDescription)"
         if isProcessing {
             isProcessing = false
@@ -617,9 +797,12 @@ final class JARVISController: ObservableObject {
         clearSessionReferences()
         cameraPermissionChecked = false
         cameraPermissionGranted = false
+        selectedDeviceIdentifier = nil
+        hasActiveDevice = false
         sessionState = .idle
         streamState = .stopped
         displayState = .stopped
+        lastSessionError = nil
     }
 
     private func clearCapabilityReferences() {
