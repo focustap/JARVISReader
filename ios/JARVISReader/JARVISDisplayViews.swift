@@ -1,7 +1,7 @@
 import MWDATDisplay
 
 enum JARVISDisplayViews {
-    static func ready(onTap: @escaping () -> Void) -> some DisplayableView {
+    static func ready(onTap: @escaping @Sendable () -> Void) -> some DisplayableView {
         FlexBox(direction: .column, spacing: 12) {
             Text("JARVIS", style: .heading)
             Text("Tap to scan", style: .body)
@@ -20,7 +20,7 @@ enum JARVISDisplayViews {
         .background(.card)
     }
 
-    static func answer(_ answer: String, onTap: @escaping () -> Void) -> some DisplayableView {
+    static func answer(_ answer: String, onTap: @escaping @Sendable () -> Void) -> some DisplayableView {
         FlexBox(direction: .column, spacing: 10) {
             Text(answer, style: .body)
             Text("Tap to scan again", style: .body)
@@ -30,7 +30,7 @@ enum JARVISDisplayViews {
         .onTap(onTap)
     }
 
-    static func error(_ message: String, onTap: @escaping () -> Void) -> some DisplayableView {
+    static func error(_ message: String, onTap: @escaping @Sendable () -> Void) -> some DisplayableView {
         FlexBox(direction: .column, spacing: 10) {
             Text("JARVIS error", style: .heading)
             Text(message, style: .body)
