@@ -63,7 +63,7 @@ final class JARVISController: ObservableObject {
     private static let backendTokenKey = "jarvisNativeBackendToken"
     private static let autoConnectKey = "jarvisAutoConnect"
     private static let maxCameraRecoveryAttempts = 1
-    private static let cameraRecoveryDelayNanoseconds: UInt64 = 450_000_000
+    private static let cameraRecoveryDelayNanoseconds: UInt64 = 650_000_000
 
     private let wearables: WearablesInterface
     private let backend = JARVISBackendClient()
@@ -94,6 +94,8 @@ final class JARVISController: ObservableObject {
     private var photoCaptureIssued = false
     private var cameraRecoveryAttempts = 0
     private var lastStreamErrorDescription: String?
+    private var pendingCameraSessionRecovery = false
+    private var cameraRecoveryReason: String?
 
     init(wearables: WearablesInterface = Wearables.shared) {
         self.wearables = wearables
@@ -279,6 +281,8 @@ final class JARVISController: ObservableObject {
         photoCaptureIssued = false
         cameraRecoveryAttempts = 0
         lastStreamErrorDescription = nil
+        pendingCameraSessionRecovery = false
+        cameraRecoveryReason = nil
         status = "Starting camera for one photo…"
         Task { await sendWorkingToDisplay("Starting camera…") }
 
@@ -501,7 +505,9 @@ final class JARVISController: ObservableObject {
 
         isConnecting = true
         lastSessionError = nil
-        status = "Starting session with \(selectedInfo.name)…"
+        status = pendingCameraSessionRecovery
+            ? "Reconnecting glasses for camera recovery…"
+            : "Starting session with \(selectedInfo.name)…"
         requiresDATAppUpdate = false
 
         do {
@@ -515,13 +521,23 @@ final class JARVISController: ObservableObject {
             isConnecting = false
             requiresDATAppUpdate = true
             lastSessionError = DeviceSessionError.datAppOnTheGlassesUpdateRequired.localizedDescription
-            status = "The DAT app on the glasses needs an update."
             clearSessionReferences()
+            if pendingCameraSessionRecovery && isProcessing {
+                pendingCameraSessionRecovery = false
+                finishWithError("Camera recovery needs a DAT glasses app update.")
+            } else {
+                status = "The DAT app on the glasses needs an update."
+            }
         } catch {
             isConnecting = false
             lastSessionError = error.localizedDescription
-            status = "Could not start glasses session: \(error.localizedDescription)"
             clearSessionReferences()
+            if pendingCameraSessionRecovery && isProcessing {
+                pendingCameraSessionRecovery = false
+                finishWithError("Could not restore the camera session: \(error.localizedDescription)")
+            } else {
+                status = "Could not start glasses session: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -546,10 +562,14 @@ final class JARVISController: ObservableObject {
         case .started:
             isConnecting = false
             lastSessionError = nil
-            status = "Session connected. Starting display…"
+            status = pendingCameraSessionRecovery
+                ? "Camera session restored. Starting display…"
+                : "Session connected. Starting display…"
             setupDisplay(on: session)
         case .stopping:
-            if lastSessionError == nil {
+            if pendingCameraSessionRecovery {
+                status = "Restarting glasses session for camera…"
+            } else if lastSessionError == nil {
                 status = "Stopping glasses session…"
             }
         case .stopped:
@@ -560,7 +580,11 @@ final class JARVISController: ObservableObject {
             clearSessionReferences()
             streamState = .stopped
             displayState = .stopped
-            if let lastSessionError {
+
+            if pendingCameraSessionRecovery && isProcessing {
+                lastSessionError = nil
+                restartSessionForCameraRecovery()
+            } else if let lastSessionError {
                 status = "Glasses session error: \(lastSessionError)"
             } else {
                 status = "Glasses session stopped."
@@ -574,6 +598,25 @@ final class JARVISController: ObservableObject {
         isConnecting = false
         requiresDATAppUpdate = error == .datAppOnTheGlassesUpdateRequired
         lastSessionError = error.localizedDescription
+
+        if pendingCameraSessionRecovery && isProcessing {
+            status = "Camera session interrupted while restarting…"
+            return
+        }
+
+        if isProcessing,
+           error != .datAppOnTheGlassesUpdateRequired,
+           cameraRecoveryAttempts < Self.maxCameraRecoveryAttempts {
+            cameraRecoveryAttempts += 1
+            pendingCameraSessionRecovery = true
+            cameraRecoveryReason = error.localizedDescription
+            photoCaptureIssued = false
+            lastStreamErrorDescription = nil
+            status = "Camera session failed. Restarting glasses connection…"
+            deviceSession?.stop()
+            return
+        }
+
         status = "Glasses session error: \(error.localizedDescription)"
         stopCaptureCamera()
         if isProcessing {
@@ -595,7 +638,12 @@ final class JARVISController: ObservableObject {
             displayState = .starting
             newDisplay.start()
         } catch {
-            status = "Could not start the glasses display: \(error.localizedDescription)"
+            if pendingCameraSessionRecovery && isProcessing {
+                pendingCameraSessionRecovery = false
+                finishWithError("Could not restore the glasses display: \(error.localizedDescription)")
+            } else {
+                status = "Could not start the glasses display: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -603,8 +651,15 @@ final class JARVISController: ObservableObject {
         displayState = state
         switch state {
         case .started:
-            status = "JARVIS is ready. Camera is off until you capture."
-            sendReadyIfPossible()
+            if pendingCameraSessionRecovery && isProcessing {
+                pendingCameraSessionRecovery = false
+                cameraRecoveryReason = nil
+                status = "Camera link restored. Retrying photo…"
+                startCameraForCapture()
+            } else {
+                status = "JARVIS is ready. Camera is off until you capture."
+                sendReadyIfPossible()
+            }
         case .stopping:
             break
         case .stopped:
@@ -629,10 +684,13 @@ final class JARVISController: ObservableObject {
 
         lastStreamErrorDescription = nil
 
+        // JARVIS only needs the stream long enough to request one JPEG. Keep the
+        // transport at DAT's minimum bandwidth so the still-photo transfer has as
+        // much Bluetooth headroom as possible.
         let config = StreamConfiguration(
             videoCodec: .raw,
-            resolution: .medium,
-            frameRate: 15
+            resolution: .low,
+            frameRate: 2
         )
 
         do {
@@ -697,8 +755,8 @@ final class JARVISController: ObservableObject {
             let streamError = lastStreamErrorDescription
             let captureWasInterrupted = isProcessing && (photoCaptureIssued || streamError != nil)
 
-            // In DAT 0.9 terminal stream errors stop the stream for us. Once the
-            // state reaches .stopped, detach the dead Camera before creating a new one.
+            // In DAT 0.9 terminal stream errors stop the stream for us. Detach the
+            // dead Camera, then rebuild the whole DeviceSession before retrying.
             stopCaptureCamera()
 
             if captureWasInterrupted {
@@ -717,8 +775,8 @@ final class JARVISController: ObservableObject {
         let message = error.localizedDescription
         lastStreamErrorDescription = message
 
-        // Do not stop the stream from the error callback. DAT 0.9 owns terminal
-        // teardown and reports the authoritative result through StreamState.
+        // DAT owns terminal stream teardown. Wait for .stopped rather than calling
+        // stop from inside the error callback.
         if isProcessing {
             status = "Camera stream issue: \(message)"
             Task { await sendWorkingToDisplay("Camera interrupted…") }
@@ -731,27 +789,48 @@ final class JARVISController: ObservableObject {
         guard isProcessing else { return }
 
         guard cameraRecoveryAttempts < Self.maxCameraRecoveryAttempts else {
-            finishWithError("Camera error after retry: \(reason)")
+            finishWithError("Camera error after recovery: \(reason)")
             return
         }
 
         cameraRecoveryAttempts += 1
+        pendingCameraSessionRecovery = true
+        cameraRecoveryReason = reason
         lastStreamErrorDescription = nil
         photoCaptureIssued = false
-        status = "Camera stream ended. Reconnecting…"
+        status = "Camera stream ended. Restarting glasses session…"
+        Task { await sendWorkingToDisplay("Restarting camera link…") }
+
+        // A CRITICAL_STREAM_ERROR can leave the session's camera transport unusable.
+        // Do not add another Camera to that same session; tear down the parent and
+        // create a fresh DeviceSession after its .stopped state arrives.
+        if let session = deviceSession {
+            session.stop()
+        } else {
+            restartSessionForCameraRecovery()
+        }
+    }
+
+    private func restartSessionForCameraRecovery() {
+        guard isProcessing, pendingCameraSessionRecovery else { return }
+        guard deviceSession == nil else { return }
+
+        status = "Reconnecting glasses for camera…"
 
         Task {
-            await sendWorkingToDisplay("Reconnecting camera…")
             try? await Task.sleep(nanoseconds: Self.cameraRecoveryDelayNanoseconds)
+            guard isProcessing, pendingCameraSessionRecovery else { return }
+            guard deviceSession == nil else { return }
 
-            guard isProcessing else { return }
-            guard sessionState == .started, deviceSession != nil else {
-                finishWithError("Camera connection was lost. Tap to try again.")
-                return
+            updateDevices(Array(wearables.devices))
+            connectIfPossible()
+
+            if deviceSession == nil && !isConnecting {
+                pendingCameraSessionRecovery = false
+                finishWithError(
+                    "Could not reconnect the glasses after the camera error: \(cameraRecoveryReason ?? "unknown camera error")"
+                )
             }
-
-            status = "Retrying camera capture…"
-            startCameraForCapture()
         }
     }
 
@@ -761,6 +840,8 @@ final class JARVISController: ObservableObject {
         // The privacy light should go out as soon as the still image arrives.
         photoCaptureIssued = false
         lastStreamErrorDescription = nil
+        pendingCameraSessionRecovery = false
+        cameraRecoveryReason = nil
         stopCaptureCamera()
 
         lastPhoto = UIImage(data: data)
@@ -867,6 +948,8 @@ final class JARVISController: ObservableObject {
     }
 
     private func finishWithError(_ message: String) {
+        pendingCameraSessionRecovery = false
+        cameraRecoveryReason = nil
         stopCaptureCamera()
         isProcessing = false
         status = message
@@ -876,6 +959,8 @@ final class JARVISController: ObservableObject {
     private func suspendForRegistrationChange() {
         sentReadyCard = false
         isProcessing = false
+        pendingCameraSessionRecovery = false
+        cameraRecoveryReason = nil
         stopCaptureCamera()
         display?.stop()
         deviceSession?.stop()
@@ -894,6 +979,8 @@ final class JARVISController: ObservableObject {
     private func disconnectSessionOnly() {
         sentReadyCard = false
         isProcessing = false
+        pendingCameraSessionRecovery = false
+        cameraRecoveryReason = nil
         stopCaptureCamera()
         display?.stop()
         deviceSession?.stop()
