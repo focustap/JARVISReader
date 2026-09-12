@@ -135,7 +135,7 @@ function extractGeminiText(payload: any): string {
 
 async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
   const apiKey = env("GEMINI_API_KEY");
-  const model = env("GEMINI_MODEL", false) || "gemini-2.5-flash";
+  const model = env("GEMINI_MODEL", false) || "gemini-3.6-flash";
 
   const prompt = [
     "Analyze the attached image for a studying/homework workflow where AI assistance is allowed.",
@@ -167,7 +167,6 @@ async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Pro
           },
         ],
         generationConfig: {
-          temperature: 0.1,
           maxOutputTokens: 500,
         },
       }),
@@ -283,7 +282,6 @@ Deno.serve(async (req: Request) => {
     return handleNativeImage(req);
   }
 
-  // Meta webhook verification handshake.
   if (req.method === "GET") {
     const url = new URL(req.url);
     const mode = url.searchParams.get("hub.mode");
