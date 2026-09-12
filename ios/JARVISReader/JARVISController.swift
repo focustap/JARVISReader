@@ -62,6 +62,8 @@ final class JARVISController: ObservableObject {
 
     private static let backendTokenKey = "jarvisNativeBackendToken"
     private static let autoConnectKey = "jarvisAutoConnect"
+    private static let maxCameraRecoveryAttempts = 1
+    private static let cameraRecoveryDelayNanoseconds: UInt64 = 450_000_000
 
     private let wearables: WearablesInterface
     private let backend = JARVISBackendClient()
@@ -90,6 +92,8 @@ final class JARVISController: ObservableObject {
     private var sentReadyCard = false
     private var lastSessionError: String?
     private var photoCaptureIssued = false
+    private var cameraRecoveryAttempts = 0
+    private var lastStreamErrorDescription: String?
 
     init(wearables: WearablesInterface = Wearables.shared) {
         self.wearables = wearables
@@ -273,6 +277,8 @@ final class JARVISController: ObservableObject {
         isProcessing = true
         sentReadyCard = false
         photoCaptureIssued = false
+        cameraRecoveryAttempts = 0
+        lastStreamErrorDescription = nil
         status = "Starting camera for one photo…"
         Task { await sendWorkingToDisplay("Starting camera…") }
 
@@ -621,6 +627,8 @@ final class JARVISController: ObservableObject {
             return
         }
 
+        lastStreamErrorDescription = nil
+
         let config = StreamConfiguration(
             videoCodec: .raw,
             resolution: .medium,
@@ -670,8 +678,8 @@ final class JARVISController: ObservableObject {
         case .streaming:
             guard isProcessing, !photoCaptureIssued, let camera else { return }
             photoCaptureIssued = true
-            status = "Capturing photo…"
-            Task { await sendWorkingToDisplay("Capturing…") }
+            status = cameraRecoveryAttempts == 0 ? "Capturing photo…" : "Retrying photo capture…"
+            Task { await sendWorkingToDisplay(cameraRecoveryAttempts == 0 ? "Capturing…" : "Retrying capture…") }
 
             let didStart = camera.stream.capturePhoto(format: .jpeg)
             if !didStart {
@@ -686,24 +694,64 @@ final class JARVISController: ObservableObject {
         case .stopping:
             break
         case .stopped:
-            if isProcessing && photoCaptureIssued {
-                photoCaptureIssued = false
-                stopCaptureCamera()
-                finishWithError("Camera stopped before the photo arrived. Try again.")
-            } else {
-                clearCameraReferences()
+            let streamError = lastStreamErrorDescription
+            let captureWasInterrupted = isProcessing && (photoCaptureIssued || streamError != nil)
+
+            // In DAT 0.9 terminal stream errors stop the stream for us. Once the
+            // state reaches .stopped, detach the dead Camera before creating a new one.
+            stopCaptureCamera()
+
+            if captureWasInterrupted {
+                recoverCameraCapture(
+                    reason: streamError ?? "Camera stopped before the photo arrived."
+                )
             }
         case .starting:
-            status = "Starting camera for one photo…"
+            status = cameraRecoveryAttempts == 0
+                ? "Starting camera for one photo…"
+                : "Reconnecting camera…"
         }
     }
 
     private func handleStreamError(_ error: StreamError) {
-        stopCaptureCamera()
+        let message = error.localizedDescription
+        lastStreamErrorDescription = message
+
+        // Do not stop the stream from the error callback. DAT 0.9 owns terminal
+        // teardown and reports the authoritative result through StreamState.
         if isProcessing {
-            finishWithError("Camera error: \(error.localizedDescription)")
+            status = "Camera stream issue: \(message)"
+            Task { await sendWorkingToDisplay("Camera interrupted…") }
         } else {
-            status = "Camera error: \(error.localizedDescription)"
+            status = "Camera error: \(message)"
+        }
+    }
+
+    private func recoverCameraCapture(reason: String) {
+        guard isProcessing else { return }
+
+        guard cameraRecoveryAttempts < Self.maxCameraRecoveryAttempts else {
+            finishWithError("Camera error after retry: \(reason)")
+            return
+        }
+
+        cameraRecoveryAttempts += 1
+        lastStreamErrorDescription = nil
+        photoCaptureIssued = false
+        status = "Camera stream ended. Reconnecting…"
+
+        Task {
+            await sendWorkingToDisplay("Reconnecting camera…")
+            try? await Task.sleep(nanoseconds: Self.cameraRecoveryDelayNanoseconds)
+
+            guard isProcessing else { return }
+            guard sessionState == .started, deviceSession != nil else {
+                finishWithError("Camera connection was lost. Tap to try again.")
+                return
+            }
+
+            status = "Retrying camera capture…"
+            startCameraForCapture()
         }
     }
 
@@ -712,6 +760,7 @@ final class JARVISController: ObservableObject {
 
         // The privacy light should go out as soon as the still image arrives.
         photoCaptureIssued = false
+        lastStreamErrorDescription = nil
         stopCaptureCamera()
 
         lastPhoto = UIImage(data: data)
@@ -744,6 +793,7 @@ final class JARVISController: ObservableObject {
         clearCameraReferences()
         streamState = .stopped
         photoCaptureIssued = false
+        lastStreamErrorDescription = nil
         activeCamera?.stop()
     }
 
