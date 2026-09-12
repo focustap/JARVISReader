@@ -135,14 +135,18 @@ function extractGeminiText(payload: any): string {
 
 async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
   const apiKey = env("GEMINI_API_KEY");
-  const model = env("GEMINI_MODEL", false) || "gemini-3.6-flash";
+  const model = env("GEMINI_MODEL", false) || "gemini-3.1-flash-lite";
 
   const prompt = [
-    "Analyze the attached image for a studying/homework workflow where AI assistance is allowed.",
+    "Analyze the ENTIRE attached image for a studying/homework workflow where AI assistance is allowed.",
     "Read all clearly visible text yourself; do not require a separate OCR step.",
-    "If the image contains one or more questions, answer them accurately and concisely.",
-    "For multiple-choice questions, start with the choice letter and answer text, then add at most one short explanation when useful.",
-    "If there are multiple questions, number the answers in the same order as the image.",
+    "IMPORTANT: scan the whole image from top to bottom before answering and identify EVERY clearly visible question.",
+    "Answer EVERY legible question in the image. Do not stop after the first question and do not silently omit later questions.",
+    "Preserve the question order and numbering shown in the image. If numbering is not visible, number the answers 1, 2, 3, etc.",
+    "For multiple-choice questions, give one compact line per question in the format: 1. B — answer text.",
+    "For short-answer questions, give the shortest correct answer that is still useful.",
+    "If a question is visible but too blurry or cut off to answer reliably, include its number and say 'unreadable' instead of skipping it.",
+    "Do not add a long explanation unless the question specifically asks for one.",
     "If there is no clear question, briefly state the important visible text or what the image shows.",
     "Keep the response compact because it will be read on smart glasses.",
     caption ? `The sender included this caption: ${caption}` : "",
@@ -167,7 +171,7 @@ async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Pro
           },
         ],
         generationConfig: {
-          maxOutputTokens: 500,
+          maxOutputTokens: 1200,
         },
       }),
     },
