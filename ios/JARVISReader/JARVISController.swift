@@ -61,6 +61,7 @@ final class JARVISController: ObservableObject {
     }
 
     private static let backendTokenKey = "jarvisNativeBackendToken"
+    private static let autoConnectKey = "jarvisAutoConnect"
 
     private let wearables: WearablesInterface
     private let backend = JARVISBackendClient()
@@ -81,13 +82,19 @@ final class JARVISController: ObservableObject {
     private var photoToken: AnyListenerToken?
     private var displayStateToken: AnyListenerToken?
 
-    private var autoConnectWhenDeviceAppears = false
+    private var autoConnectWhenDeviceAppears: Bool {
+        didSet {
+            UserDefaults.standard.set(autoConnectWhenDeviceAppears, forKey: Self.autoConnectKey)
+        }
+    }
     private var sentReadyCard = false
     private var lastSessionError: String?
+    private var photoCaptureIssued = false
 
     init(wearables: WearablesInterface = Wearables.shared) {
         self.wearables = wearables
         self.backendToken = UserDefaults.standard.string(forKey: Self.backendTokenKey) ?? ""
+        self.autoConnectWhenDeviceAppears = UserDefaults.standard.object(forKey: Self.autoConnectKey) as? Bool ?? true
 
         startObservers()
         refresh()
@@ -97,8 +104,10 @@ final class JARVISController: ObservableObject {
         registrationState == .registered
     }
 
+    // Ready means the persistent glasses session + display are alive.
+    // The camera intentionally stays OFF until the user requests a capture.
     var isReady: Bool {
-        sessionState == .started && streamState == .streaming && displayState == .started
+        sessionState == .started && displayState == .started && cameraPermissionGranted
     }
 
     var selectedDeviceName: String {
@@ -136,11 +145,11 @@ final class JARVISController: ObservableObject {
 
     var streamLabel: String {
         switch streamState {
-        case .streaming: return "streaming"
-        case .starting: return "starting"
+        case .streaming: return "streaming (capture only)"
+        case .starting: return "starting capture"
         case .waitingForDevice: return "waiting for device"
-        case .stopping: return "stopping"
-        case .stopped: return "stopped"
+        case .stopping: return "stopping capture"
+        case .stopped: return "off"
         case .paused: return "paused"
         }
     }
@@ -166,7 +175,6 @@ final class JARVISController: ObservableObject {
             Task { await refreshCameraPermission() }
         } else {
             cameraPermissionChecked = false
-            cameraPermissionGranted = false
         }
     }
 
@@ -181,7 +189,7 @@ final class JARVISController: ObservableObject {
                 try await wearables.startRegistration()
                 registrationState = wearables.registrationState
                 status = registrationState == .registered
-                    ? "Registered. Grant camera access next."
+                    ? "Registered. Checking your saved camera access…"
                     : "Registration request sent. Finish approval in Meta AI."
             } catch let error as RegistrationError {
                 status = "Registration error: \(error.description)"
@@ -204,7 +212,7 @@ final class JARVISController: ObservableObject {
                 cameraPermissionGranted = result == .granted
 
                 if cameraPermissionGranted {
-                    status = "Camera access granted. Looking for your glasses…"
+                    status = "Camera access granted. Camera stays off until capture."
                     autoConnectWhenDeviceAppears = true
                     updateDevices(Array(wearables.devices))
                     connectIfPossible()
@@ -230,7 +238,7 @@ final class JARVISController: ObservableObject {
         }
 
         if deviceSession != nil {
-            disconnect()
+            disconnectSessionOnly()
         }
 
         selectedDeviceIdentifier = identifier
@@ -263,30 +271,17 @@ final class JARVISController: ObservableObject {
         guard !isProcessing else { return }
 
         isProcessing = true
-        status = "Capturing from the glasses…"
+        sentReadyCard = false
+        photoCaptureIssued = false
+        status = "Starting camera for one photo…"
+        Task { await sendWorkingToDisplay("Starting camera…") }
 
-        Task { await sendWorkingToDisplay("Capturing…") }
-
-        let didStart = camera?.stream.capturePhoto(format: .jpeg) ?? false
-        if !didStart {
-            finishWithError("The glasses could not capture a photo. Try again.")
-        }
+        startCameraForCapture()
     }
 
     func disconnect() {
-        sentReadyCard = false
         autoConnectWhenDeviceAppears = false
-        isProcessing = false
-
-        display?.stop()
-        camera?.stop()
-        deviceSession?.stop()
-
-        clearCapabilityReferences()
-        clearSessionReferences()
-        sessionState = .idle
-        streamState = .stopped
-        displayState = .stopped
+        disconnectSessionOnly()
         status = "Disconnected."
     }
 
@@ -319,17 +314,19 @@ final class JARVISController: ObservableObject {
 
                 switch state {
                 case .registered:
-                    self.status = "Registered with Meta AI."
+                    self.status = "Registered with Meta AI. Restoring setup…"
                     self.updateDevices(Array(wearables.devices))
                     await self.refreshCameraPermission()
                 case .registering:
                     self.status = "Registration is in progress…"
                 case .available:
-                    self.status = "Ready to register with Meta AI."
-                    self.disconnectForRegistrationReset()
+                    // Do not erase saved permission/device choices here. DAT can briefly
+                    // report a non-registered state while the app/Meta AI link settles.
+                    self.status = "Meta registration is available."
+                    self.suspendForRegistrationChange()
                 case .unavailable:
                     self.status = "Meta registration is currently unavailable."
-                    self.disconnectForRegistrationReset()
+                    self.suspendForRegistrationChange()
                 }
             }
         }
@@ -435,7 +432,6 @@ final class JARVISController: ObservableObject {
     private func refreshCameraPermission() async {
         guard isRegistered else {
             cameraPermissionChecked = false
-            cameraPermissionGranted = false
             return
         }
 
@@ -444,10 +440,17 @@ final class JARVISController: ObservableObject {
             cameraPermissionChecked = true
             cameraPermissionGranted = result == .granted
 
-            if cameraPermissionGranted && deviceSession == nil {
-                status = hasActiveDevice
-                    ? "Camera access granted. Ready to connect."
-                    : "Camera access granted. Waiting for display-capable glasses…"
+            if cameraPermissionGranted {
+                status = deviceSession == nil
+                    ? (hasActiveDevice ? "Setup restored. Connecting glasses…" : "Setup restored. Waiting for glasses…")
+                    : status
+
+                if autoConnectWhenDeviceAppears {
+                    updateDevices(Array(wearables.devices))
+                    connectIfPossible()
+                }
+            } else {
+                status = "Camera access needs approval."
             }
         } catch {
             cameraPermissionChecked = true
@@ -537,8 +540,8 @@ final class JARVISController: ObservableObject {
         case .started:
             isConnecting = false
             lastSessionError = nil
-            status = "Session connected. Starting camera and display…"
-            setupCapabilities(on: session)
+            status = "Session connected. Starting display…"
+            setupDisplay(on: session)
         case .stopping:
             if lastSessionError == nil {
                 status = "Stopping glasses session…"
@@ -546,7 +549,8 @@ final class JARVISController: ObservableObject {
         case .stopped:
             isConnecting = false
             sentReadyCard = false
-            clearCapabilityReferences()
+            stopCaptureCamera()
+            clearDisplayReference()
             clearSessionReferences()
             streamState = .stopped
             displayState = .stopped
@@ -565,69 +569,27 @@ final class JARVISController: ObservableObject {
         requiresDATAppUpdate = error == .datAppOnTheGlassesUpdateRequired
         lastSessionError = error.localizedDescription
         status = "Glasses session error: \(error.localizedDescription)"
+        stopCaptureCamera()
         if isProcessing {
             isProcessing = false
         }
     }
 
-    private func setupCapabilities(on session: DeviceSession) {
-        if display == nil {
-            do {
-                let newDisplay = try session.addDisplay()
-                display = newDisplay
-                displayStateToken = newDisplay.statePublisher.listen { [weak self] state in
-                    Task { @MainActor in
-                        self?.handleDisplayState(state)
-                    }
+    private func setupDisplay(on session: DeviceSession) {
+        guard display == nil else { return }
+
+        do {
+            let newDisplay = try session.addDisplay()
+            display = newDisplay
+            displayStateToken = newDisplay.statePublisher.listen { [weak self] state in
+                Task { @MainActor in
+                    self?.handleDisplayState(state)
                 }
-                displayState = .starting
-                newDisplay.start()
-            } catch {
-                status = "Could not start the glasses display: \(error.localizedDescription)"
             }
-        }
-
-        if camera == nil {
-            let config = StreamConfiguration(
-                videoCodec: .raw,
-                resolution: .medium,
-                frameRate: 15
-            )
-
-            do {
-                guard let newCamera = try session.addCamera(config: config) else {
-                    status = "Could not create the glasses camera."
-                    return
-                }
-
-                camera = newCamera
-                let stream = newCamera.stream
-
-                streamStateToken = stream.statePublisher.listen { [weak self] state in
-                    Task { @MainActor in
-                        self?.handleStreamState(state)
-                    }
-                }
-
-                streamErrorToken = stream.errorPublisher.listen { [weak self] error in
-                    Task { @MainActor in
-                        self?.handleStreamError(error)
-                    }
-                }
-
-                photoToken = stream.photoDataPublisher.listen { [weak self] photoData in
-                    let bytes = Data(photoData.data)
-                    Task { @MainActor in
-                        self?.handlePhoto(bytes)
-                    }
-                }
-
-                streamState = .starting
-                stream.start()
-            } catch {
-                camera = nil
-                status = "Could not start the glasses camera: \(error.localizedDescription)"
-            }
+            displayState = .starting
+            newDisplay.start()
+        } catch {
+            status = "Could not start the glasses display: \(error.localizedDescription)"
         }
     }
 
@@ -635,9 +597,7 @@ final class JARVISController: ObservableObject {
         displayState = state
         switch state {
         case .started:
-            status = streamState == .streaming
-                ? "JARVIS is ready. Tap the glasses to scan."
-                : "Display ready. Waiting for camera…"
+            status = "JARVIS is ready. Camera is off until you capture."
             sendReadyIfPossible()
         case .stopping:
             break
@@ -650,42 +610,109 @@ final class JARVISController: ObservableObject {
         }
     }
 
+    private func startCameraForCapture() {
+        guard isProcessing,
+              sessionState == .started,
+              let session = deviceSession,
+              camera == nil else {
+            if isProcessing && camera != nil {
+                status = "Camera is already starting…"
+            }
+            return
+        }
+
+        let config = StreamConfiguration(
+            videoCodec: .raw,
+            resolution: .medium,
+            frameRate: 15
+        )
+
+        do {
+            guard let newCamera = try session.addCamera(config: config) else {
+                finishWithError("Could not create the glasses camera.")
+                return
+            }
+
+            camera = newCamera
+            let stream = newCamera.stream
+
+            streamStateToken = stream.statePublisher.listen { [weak self] state in
+                Task { @MainActor in
+                    self?.handleStreamState(state)
+                }
+            }
+
+            streamErrorToken = stream.errorPublisher.listen { [weak self] error in
+                Task { @MainActor in
+                    self?.handleStreamError(error)
+                }
+            }
+
+            photoToken = stream.photoDataPublisher.listen { [weak self] photoData in
+                let bytes = Data(photoData.data)
+                Task { @MainActor in
+                    self?.handlePhoto(bytes)
+                }
+            }
+
+            streamState = .starting
+            stream.start()
+        } catch {
+            stopCaptureCamera()
+            finishWithError("Could not start the glasses camera: \(error.localizedDescription)")
+        }
+    }
+
     private func handleStreamState(_ state: StreamState) {
         streamState = state
+
         switch state {
         case .streaming:
-            status = displayState == .started
-                ? "JARVIS is ready. Tap the glasses to scan."
-                : "Camera ready. Waiting for display…"
-            sendReadyIfPossible()
+            guard isProcessing, !photoCaptureIssued, let camera else { return }
+            photoCaptureIssued = true
+            status = "Capturing photo…"
+            Task { await sendWorkingToDisplay("Capturing…") }
+
+            let didStart = camera.stream.capturePhoto(format: .jpeg)
+            if !didStart {
+                photoCaptureIssued = false
+                stopCaptureCamera()
+                finishWithError("The glasses could not capture a photo. Try again.")
+            }
         case .waitingForDevice:
             status = "Camera is waiting for the glasses…"
-            sentReadyCard = false
         case .paused:
-            status = "Camera stream paused."
-            sentReadyCard = false
+            status = "Camera paused before capture."
         case .stopping:
             break
         case .stopped:
-            sentReadyCard = false
-            streamStateToken = nil
-            streamErrorToken = nil
-            photoToken = nil
-            camera = nil
+            if isProcessing && photoCaptureIssued {
+                photoCaptureIssued = false
+                stopCaptureCamera()
+                finishWithError("Camera stopped before the photo arrived. Try again.")
+            } else {
+                clearCameraReferences()
+            }
         case .starting:
-            break
+            status = "Starting camera for one photo…"
         }
     }
 
     private func handleStreamError(_ error: StreamError) {
-        status = "Camera stream error: \(error.localizedDescription)"
+        stopCaptureCamera()
         if isProcessing {
-            isProcessing = false
+            finishWithError("Camera error: \(error.localizedDescription)")
+        } else {
+            status = "Camera error: \(error.localizedDescription)"
         }
     }
 
     private func handlePhoto(_ data: Data) {
         guard isProcessing else { return }
+
+        // The privacy light should go out as soon as the still image arrives.
+        photoCaptureIssued = false
+        stopCaptureCamera()
 
         lastPhoto = UIImage(data: data)
         status = "Thinking…"
@@ -712,13 +739,21 @@ final class JARVISController: ObservableObject {
         }
     }
 
+    private func stopCaptureCamera() {
+        let activeCamera = camera
+        clearCameraReferences()
+        streamState = .stopped
+        photoCaptureIssued = false
+        activeCamera?.stop()
+    }
+
     private func compressedJPEG(from data: Data) -> Data? {
         guard let image = UIImage(data: data) else { return nil }
         return image.jpegData(compressionQuality: 0.78)
     }
 
     private func sendReadyIfPossible() {
-        guard isReady, !isProcessing, !sentReadyCard else { return }
+        guard isReady, camera == nil, !isProcessing, !sentReadyCard else { return }
         sentReadyCard = true
 
         Task {
@@ -782,36 +817,54 @@ final class JARVISController: ObservableObject {
     }
 
     private func finishWithError(_ message: String) {
+        stopCaptureCamera()
         isProcessing = false
         status = message
         Task { await sendErrorToDisplay(message) }
     }
 
-    private func disconnectForRegistrationReset() {
-        if deviceSession != nil {
-            display?.stop()
-            camera?.stop()
-            deviceSession?.stop()
-        }
-        clearCapabilityReferences()
+    private func suspendForRegistrationChange() {
+        sentReadyCard = false
+        isProcessing = false
+        stopCaptureCamera()
+        display?.stop()
+        deviceSession?.stop()
+        clearDisplayReference()
         clearSessionReferences()
+        sessionState = .idle
+        streamState = .stopped
+        displayState = .stopped
+        lastSessionError = nil
         cameraPermissionChecked = false
-        cameraPermissionGranted = false
-        selectedDeviceIdentifier = nil
-        hasActiveDevice = false
+        // Deliberately preserve the last known permission flag, selected device,
+        // and auto-connect preference so a transient DAT state does not make the
+        // user redo setup. Permission is verified again when registration returns.
+    }
+
+    private func disconnectSessionOnly() {
+        sentReadyCard = false
+        isProcessing = false
+        stopCaptureCamera()
+        display?.stop()
+        deviceSession?.stop()
+        clearDisplayReference()
+        clearSessionReferences()
         sessionState = .idle
         streamState = .stopped
         displayState = .stopped
         lastSessionError = nil
     }
 
-    private func clearCapabilityReferences() {
-        displayStateToken = nil
+    private func clearCameraReferences() {
         streamStateToken = nil
         streamErrorToken = nil
         photoToken = nil
-        display = nil
         camera = nil
+    }
+
+    private func clearDisplayReference() {
+        displayStateToken = nil
+        display = nil
     }
 
     private func clearSessionReferences() {
