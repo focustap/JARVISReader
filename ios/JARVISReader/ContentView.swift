@@ -48,7 +48,7 @@ struct ContentView: View {
             }
 
             if controller.isReady {
-                Text("Tap the JARVIS card on your glasses to capture → Gemini → answer on the display.")
+                Text("Use Capture & Ask on your glasses. The answer will appear there too.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -79,10 +79,14 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(controller.isRequestingPermission)
             } else if controller.isReady {
-                Button(controller.isProcessing ? "Thinking…" : "Capture & Ask") {
+                Text(controller.isProcessing ? "JARVIS is thinking…" : "Capture & Ask is ready on your glasses.")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+
+                Button(controller.isProcessing ? "Thinking…" : "Capture from iPhone (fallback)") {
                     controller.captureAndAsk()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .disabled(controller.isProcessing)
 
                 Button("Disconnect") {
