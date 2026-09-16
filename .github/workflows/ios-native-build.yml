@@ -7,6 +7,7 @@ on:
       - shortcuts-chatgpt-test
     paths:
       - "ios/**"
+      - "jarvisicon.png"
       - ".github/workflows/ios-native-build.yml"
 
 jobs:
@@ -21,6 +22,39 @@ jobs:
         run: |
           sw_vers
           xcodebuild -version
+
+      - name: Generate app icon from repository image
+        run: |
+          set -euo pipefail
+          test -f jarvisicon.png
+          ICONSET="ios/JARVISReader/Assets.xcassets/AppIcon.appiconset"
+          mkdir -p "$ICONSET"
+          cat > ios/JARVISReader/Assets.xcassets/Contents.json <<'EOF'
+          {
+            "info" : {
+              "author" : "xcode",
+              "version" : 1
+            }
+          }
+          EOF
+          cat > "$ICONSET/Contents.json" <<'EOF'
+          {
+            "images" : [
+              {
+                "filename" : "AppIcon-1024.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : {
+              "author" : "xcode",
+              "version" : 1
+            }
+          }
+          EOF
+          sips -z 1024 1024 jarvisicon.png --out "$ICONSET/AppIcon-1024.png"
+          sips -g pixelWidth -g pixelHeight "$ICONSET/AppIcon-1024.png"
 
       - name: Install XcodeGen
         run: brew install xcodegen
