@@ -16,14 +16,14 @@ targets:
     info:
       path: JARVISReader/Info.plist
       properties:
-        CFBundleDisplayName: JARVIS Reader
-        CFBundleShortVersionString: "1.0.19"
-        CFBundleVersion: "19"
+        CFBundleDisplayName: JARVIS Reader Test
+        CFBundleShortVersionString: "1.0.20"
+        CFBundleVersion: "20"
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
             CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
             CFBundleURLSchemes:
-              - jarvisreader
+              - jarvisreader-test
         LSApplicationQueriesSchemes:
           - fb-viewapp
         UISupportedExternalAccessoryProtocols:
@@ -33,14 +33,14 @@ targets:
           - bluetooth-central
           - bluetooth-peripheral
           - external-accessory
-        NSBluetoothAlwaysUsageDescription: JARVIS Reader connects to your Meta glasses to capture images and show answers.
-        NSBluetoothPeripheralUsageDescription: JARVIS Reader uses Bluetooth to communicate with your Meta glasses.
-        NSLocalNetworkUsageDescription: JARVIS Reader uses the local network to communicate with your Meta glasses.
+        NSBluetoothAlwaysUsageDescription: JARVIS Reader Test connects to your Meta glasses to capture images and show answers.
+        NSBluetoothPeripheralUsageDescription: JARVIS Reader Test uses Bluetooth to communicate with your Meta glasses.
+        NSLocalNetworkUsageDescription: JARVIS Reader Test uses the local network to communicate with your Meta glasses.
         NSBonjourServices:
           - _bonjour._tcp
         MWDAT:
           DAMEnabled: true
-          AppLinkURLScheme: jarvisreader://
+          AppLinkURLScheme: jarvisreader-test://
           MetaAppID: "0"
           ClientToken: ""
           TeamID: CX3DNSA9YG
@@ -49,10 +49,10 @@ targets:
         UILaunchScreen: {}
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISReader
+        PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISReaderTest
         PRODUCT_NAME: JARVISReader
-        MARKETING_VERSION: "1.0.19"
-        CURRENT_PROJECT_VERSION: "19"
+        MARKETING_VERSION: "1.0.20"
+        CURRENT_PROJECT_VERSION: "20"
         SWIFT_VERSION: 6.0
         TARGETED_DEVICE_FAMILY: "1"
     dependencies:
