@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>JARVIS Reader</string>
+    <string>JARVIS Reader Test</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleName</key>
@@ -11,9 +11,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>1.0.20</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>20</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UILaunchScreen</key>
@@ -28,7 +28,7 @@
             <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>jarvisreader</string>
+                <string>jarvisreader-test</string>
             </array>
         </dict>
     </array>
@@ -52,11 +52,11 @@
     </array>
 
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>JARVIS Reader connects to your Meta glasses to capture images and show answers.</string>
+    <string>JARVIS Reader Test connects to your Meta glasses to capture images and show answers.</string>
     <key>NSBluetoothPeripheralUsageDescription</key>
-    <string>JARVIS Reader uses Bluetooth to communicate with your Meta glasses.</string>
+    <string>JARVIS Reader Test uses Bluetooth to communicate with your Meta glasses.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>JARVIS Reader uses the local network to communicate with your Meta glasses.</string>
+    <string>JARVIS Reader Test uses the local network to communicate with your Meta glasses.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_bonjour._tcp</string>
@@ -64,14 +64,16 @@
 
     <key>MWDAT</key>
     <dict>
+        <key>DAMEnabled</key>
+        <true/>
         <key>AppLinkURLScheme</key>
-        <string>jarvisreader://</string>
+        <string>jarvisreader-test://</string>
         <key>MetaAppID</key>
         <string>0</string>
         <key>ClientToken</key>
         <string></string>
         <key>TeamID</key>
-        <string></string>
+        <string>CX3DNSA9YG</string>
         <key>Analytics</key>
         <dict>
             <key>OptOut</key>
