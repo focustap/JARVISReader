@@ -1,3 +1,4 @@
+# Experimental Shortcuts/ChatGPT test app. Stable native-ios remains untouched.
 name: JARVISReader
 options:
   bundleIdPrefix: com.focustap
