@@ -24,7 +24,7 @@ final class JARVISShortcutClient {
             case .couldNotBuildURL:
                 return "JARVIS could not build the Shortcuts launch URL."
             case .couldNotOpenShortcuts:
-                return "JARVIS could not open the Shortcuts app. Make sure Shortcuts is installed."
+                return "iOS would not open Shortcuts. This commonly happens while the phone is locked."
             case .cancelled:
                 return "The JARVIS AI Shortcut was cancelled."
             case .failed(let message):
