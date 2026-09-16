@@ -1,10 +1,10 @@
-name: Native iOS Build
+name: Native iOS Test Build
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - native-ios
+      - shortcuts-chatgpt-test
     paths:
       - "ios/**"
       - ".github/workflows/ios-native-build.yml"
@@ -37,7 +37,7 @@ jobs:
             -scheme JARVISReader \
             -resolvePackageDependencies
 
-      - name: Build unsigned iPhone app
+      - name: Build unsigned iPhone test app
         working-directory: ios
         run: |
           set -o pipefail
@@ -52,20 +52,20 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build | tee "$RUNNER_TEMP/xcodebuild.log"
 
-      - name: Package unsigned IPA
+      - name: Package unsigned test IPA
         run: |
           APP="$RUNNER_TEMP/JARVISDerivedData/Build/Products/Release-iphoneos/JARVISReader.app"
           test -d "$APP"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
-          zip -qry JARVISReader-unsigned.ipa Payload
+          zip -qry JARVISReader-Test-unsigned.ipa Payload
 
-      - name: Upload IPA
+      - name: Upload test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: JARVISReader-unsigned-ipa
-          path: ${{ runner.temp }}/JARVISReader-unsigned.ipa
+          name: JARVISReader-Test-unsigned-ipa
+          path: ${{ runner.temp }}/JARVISReader-Test-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -73,7 +73,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-build-log
+          name: ios-test-build-log
           path: ${{ runner.temp }}/xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
