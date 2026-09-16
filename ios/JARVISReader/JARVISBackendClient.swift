@@ -34,7 +34,15 @@ struct JARVISBackendClient {
         self.endpoint = endpoint
     }
 
+    // Experimental test build route: captured images are handed to the iOS
+    // Shortcut named "JARVIS AI", which returns ChatGPT's textual answer via
+    // x-callback-url. The existing Gemini implementation remains below as a
+    // fallback we can re-enable without touching the stable native-ios branch.
     func ask(imageData: Data, token: String = "") async throws -> String {
+        try await JARVISShortcutClient.shared.ask(imageData: imageData)
+    }
+
+    func askGemini(imageData: Data, token: String = "") async throws -> String {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 45
