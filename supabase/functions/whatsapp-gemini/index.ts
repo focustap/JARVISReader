@@ -1,4 +1,4 @@
-// JARVIS Reader: native glasses / WhatsApp -> Gemini Vision
+// JARVIS Reader: native glasses -> OpenAI Vision; WhatsApp -> Gemini Vision
 // Supabase Edge Function. No database is required.
 
 const encoder = new TextEncoder();
@@ -124,15 +124,6 @@ async function getWhatsAppMedia(mediaId: string): Promise<{ bytes: Uint8Array; m
   return { bytes, mimeType };
 }
 
-function extractGeminiText(payload: any): string {
-  const parts = payload?.candidates?.[0]?.content?.parts || [];
-  return parts
-    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-}
-
 function plainTextForGlasses(input: string): string {
   let text = input;
 
@@ -169,8 +160,6 @@ function plainTextForGlasses(input: string): string {
     .replace(/_\s*\{([^{}]+)\}/g, "_$1")
     .replace(/\\([A-Za-z]+)/g, "$1")
     .replace(/[{}]/g, "")
-
-    // Unicode math/punctuation -> ASCII equivalents that render reliably.
     .replace(/×/g, "*")
     .replace(/÷/g, "/")
     .replace(/[−–—]/g, "-")
@@ -212,11 +201,8 @@ function plainTextForGlasses(input: string): string {
   return text;
 }
 
-async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
-  const apiKey = env("GEMINI_API_KEY");
-  const model = env("GEMINI_MODEL", false) || "gemini-3.1-flash-lite";
-
-  const prompt = [
+function buildVisionPrompt(caption = ""): string {
+  return [
     "Analyze the ENTIRE attached image for a studying/homework workflow where AI assistance is allowed.",
     "Read all clearly visible text yourself; do not require a separate OCR step.",
     "IMPORTANT: scan the whole image from top to bottom before answering and identify EVERY clearly visible question.",
@@ -233,6 +219,75 @@ async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Pro
     "Keep the response compact because it will be read on smart glasses.",
     caption ? `The sender included this caption: ${caption}` : "",
   ].filter(Boolean).join("\n");
+}
+
+function extractGeminiText(payload: any): string {
+  const parts = payload?.candidates?.[0]?.content?.parts || [];
+  return parts
+    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function extractOpenAIText(payload: any): string {
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+
+  const chunks: string[] = [];
+  for (const item of payload?.output || []) {
+    for (const part of item?.content || []) {
+      if (typeof part?.text === "string") chunks.push(part.text);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+async function askOpenAI(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
+  const apiKey = env("OPENAI_API_KEY");
+  const model = env("OPENAI_MODEL", false) || "gpt-5.6-terra";
+  const prompt = buildVisionPrompt(caption);
+  const imageDataUrl = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_image", image_url: imageDataUrl, detail: "high" },
+            { type: "input_text", text: prompt },
+          ],
+        },
+      ],
+      reasoning: { effort: "low" },
+      max_output_tokens: 1200,
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`OpenAI failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ""}`);
+  }
+
+  const data = await response.json();
+  const answer = extractOpenAIText(data);
+  if (!answer) throw new Error("OpenAI returned no text answer");
+  return plainTextForGlasses(answer);
+}
+
+async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
+  const apiKey = env("GEMINI_API_KEY");
+  const model = env("GEMINI_MODEL", false) || "gemini-3.1-flash-lite";
+  const prompt = buildVisionPrompt(caption);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -297,11 +352,11 @@ async function handleNativeImage(req: Request): Promise<Response> {
   }
 
   try {
-    const answer = await askGemini(bytes, mimeType);
+    const answer = await askOpenAI(bytes, mimeType);
     return Response.json({ ok: true, answer });
   } catch (error) {
-    console.error("Native JARVIS request failed", error);
-    const message = error instanceof Error ? error.message : "Unknown Gemini error";
+    console.error("Native JARVIS OpenAI request failed", error);
+    const message = error instanceof Error ? error.message : "Unknown OpenAI error";
     return Response.json({ ok: false, error: message }, { status: 502 });
   }
 }
