@@ -17,7 +17,7 @@ struct JARVISBackendClient {
             case .server(let status, let message):
                 return "Backend error \(status): \(message)"
             case .emptyAnswer:
-                return "Gemini returned an empty answer."
+                return "JARVIS returned an empty answer."
             }
         }
     }
@@ -34,19 +34,7 @@ struct JARVISBackendClient {
         self.endpoint = endpoint
     }
 
-    // Prefer ChatGPT through the user's JARVIS AI Shortcut. iOS refuses to
-    // foreground Shortcuts from JARVIS while the phone is locked, so that
-    // specific launch failure automatically falls back to the existing Gemini
-    // backend. The same captured image is reused; no second capture is needed.
     func ask(imageData: Data, token: String = "") async throws -> String {
-        do {
-            return try await JARVISShortcutClient.shared.ask(imageData: imageData)
-        } catch JARVISShortcutClient.ShortcutError.couldNotOpenShortcuts {
-            return try await askGemini(imageData: imageData, token: token)
-        }
-    }
-
-    func askGemini(imageData: Data, token: String = "") async throws -> String {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 45
