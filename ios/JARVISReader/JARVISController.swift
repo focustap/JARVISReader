@@ -682,7 +682,7 @@ final class JARVISController: ObservableObject {
 
         let config = StreamConfiguration(
             videoCodec: .raw,
-            resolution: .low,
+            resolution: .high,
             frameRate: 2
         )
 
@@ -856,7 +856,9 @@ final class JARVISController: ObservableObject {
         Task { await sendWorkingToDisplay("Thinking…") }
 
         Task {
-            let uploadData = compressedJPEG(from: data) ?? data
+            // Preserve the original JPEG from the glasses. Re-encoding here was
+            // throwing away small text detail before the image reached the model.
+            let uploadData = data
 
             do {
                 let answer = try await backend.ask(
