@@ -279,7 +279,90 @@ function extractGeminiText(payload: any): string {
     .trim();
 }
 
-async function askGemini(
+async function askGeminiSingle(
+  bytes: Uint8Array,
+  mimeType: string,
+  caption = "",
+): Promise<string> {
+  const apiKey = env("GEMINI_API_KEY");
+  const model = env("GEMINI_MODEL", false) || "gemini-2.5-flash";
+
+  const prompt = [
+    "Analyze the attached image for a studying/homework workflow where AI assistance is allowed.",
+    "Read all clearly visible text yourself; do not require a separate OCR step.",
+    "If the image contains one or more questions, answer them accurately and concisely.",
+    "For multiple-choice questions, start with the choice letter and answer text, then add at most one short explanation when useful.",
+    "If there are multiple questions, number the answers in the same order as the image.",
+    "If there is no clear question, briefly state the important visible text or what the image shows.",
+    "Keep the response compact because it will be read on smart glasses.",
+    caption ? `The sender included this caption: ${caption}` : "",
+  ].filter(Boolean).join("\n");
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inline_data: { mime_type: mimeType, data: bytesToBase64(bytes) } },
+              { text: prompt },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 500,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Gemini failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`,
+    );
+  }
+
+  const data = await response.json();
+  const answer = extractGeminiText(data);
+  if (!answer) throw new Error("Gemini returned no text answer");
+  return answer;
+}
+
+function parseImageMode(caption: string): {
+  mode: "single" | "context" | "question";
+  cleanCaption: string;
+} {
+  const value = caption.trim();
+  const lower = value.toLowerCase();
+
+  const contextPrefixes = ["[jarvis_context]", "jarvis:context"];
+  const questionPrefixes = ["[jarvis_question]", "jarvis:question"];
+
+  for (const prefix of contextPrefixes) {
+    if (lower.startsWith(prefix)) {
+      return { mode: "context", cleanCaption: value.slice(prefix.length).trim() };
+    }
+  }
+
+  for (const prefix of questionPrefixes) {
+    if (lower.startsWith(prefix)) {
+      return { mode: "question", cleanCaption: value.slice(prefix.length).trim() };
+    }
+  }
+
+  return { mode: "single", cleanCaption: value };
+}
+
+async function askGeminiWithContext(
   contextBytes: Uint8Array,
   contextMimeType: string,
   questionBytes: Uint8Array,
@@ -390,7 +473,8 @@ async function processImageJob(job: ImageJob): Promise<void> {
   const mediaId = job.message.image?.id || "";
   const messageId = job.message.id || "";
   const imageMimeType = job.message.image?.mime_type || "image/jpeg";
-  const imageCaption = job.message.image?.caption || "";
+  const rawCaption = job.message.image?.caption || "";
+  const { mode, cleanCaption } = parseImageMode(rawCaption);
 
   if (!from || !phoneNumberId || !mediaId) return;
 
@@ -400,9 +484,17 @@ async function processImageJob(job: ImageJob): Promise<void> {
   }
 
   try {
+    // NORMAL MODE: every untagged photo remains the original one-photo -> answer behavior.
+    if (mode === "single") {
+      const image = await getWhatsAppMedia(mediaId);
+      const answer = await askGeminiSingle(image.bytes, image.mimeType, cleanCaption);
+      await sendWhatsAppText(phoneNumberId, from, answer);
+      return;
+    }
+
     const session = await getPhotoSession(from);
 
-    // Ignore webhook retries for an image we have already accepted or completed.
+    // Ignore webhook retries for context/question images we already accepted.
     if (
       messageId &&
       (messageId === session?.context_message_id ||
@@ -412,12 +504,12 @@ async function processImageJob(job: ImageJob): Promise<void> {
       return;
     }
 
-    if (!isFreshContext(session)) {
+    if (mode === "context") {
       await saveContext(
         from,
         mediaId,
         imageMimeType,
-        imageCaption,
+        cleanCaption,
         messageId,
         session?.last_question_message_id || null,
       );
@@ -429,18 +521,28 @@ async function processImageJob(job: ImageJob): Promise<void> {
       return;
     }
 
+    // CONTEXT MODE question: only pair when the question is explicitly tagged.
+    if (!isFreshContext(session)) {
+      await sendWhatsAppText(
+        phoneNumberId,
+        from,
+        "NO CONTEXT SAVED · Start Context Mode again and take the context photo first.",
+      );
+      return;
+    }
+
     const [contextImage, questionImage] = await Promise.all([
       getWhatsAppMedia(session!.context_media_id!),
       getWhatsAppMedia(mediaId),
     ]);
 
-    const answer = await askGemini(
+    const answer = await askGeminiWithContext(
       contextImage.bytes,
       contextImage.mimeType || session!.context_mime_type || "image/jpeg",
       questionImage.bytes,
       questionImage.mimeType,
       session!.context_caption || "",
-      imageCaption,
+      cleanCaption,
     );
 
     await sendWhatsAppText(phoneNumberId, from, answer);
@@ -452,7 +554,9 @@ async function processImageJob(job: ImageJob): Promise<void> {
       await sendWhatsAppText(
         phoneNumberId,
         from,
-        "JARVIS couldn't process that photo pair. If the context was already saved, resend the question photo.",
+        mode === "single"
+          ? "JARVIS couldn't process that image. Try sending it again."
+          : "JARVIS couldn't process that context/question pair. Start Context Mode again if needed.",
       );
     } catch (replyError) {
       console.error("Could not send JARVIS failure reply", replyError);
