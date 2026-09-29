@@ -919,9 +919,22 @@ final class JARVISController: ObservableObject {
 
             Task {
                 do {
+                    guard let combinedImageData = contextCompositeJPEG(
+                        contextData: contextImageData,
+                        questionData: uploadData
+                    ) else {
+                        throw NSError(
+                            domain: "JARVISReader",
+                            code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "Could not combine the context and question photos."
+                            ]
+                        )
+                    }
+
                     let answer = try await backend.ask(
-                        contextImageData: contextImageData,
-                        questionImageData: uploadData,
+                        imageData: combinedImageData,
                         token: backendToken
                     )
                     self.contextImageData = nil
@@ -977,6 +990,122 @@ final class JARVISController: ObservableObject {
     private func compressedJPEG(from data: Data) -> Data? {
         guard let image = UIImage(data: data) else { return nil }
         return image.jpegData(compressionQuality: 0.78)
+    }
+
+    private func contextCompositeJPEG(
+        contextData: Data,
+        questionData: Data
+    ) -> Data? {
+        guard let contextImage = UIImage(data: contextData),
+              let questionImage = UIImage(data: questionData) else {
+            return nil
+        }
+
+        let canvasWidth: CGFloat = 1400
+        let sidePadding: CGFloat = 36
+        let labelHeight: CGFloat = 72
+        let sectionGap: CGFloat = 28
+        let contentWidth = canvasWidth - (sidePadding * 2)
+
+        func scaledSize(for image: UIImage) -> CGSize {
+            guard image.size.width > 0, image.size.height > 0 else {
+                return .zero
+            }
+
+            let scale = min(1, contentWidth / image.size.width)
+            return CGSize(
+                width: image.size.width * scale,
+                height: image.size.height * scale
+            )
+        }
+
+        let contextSize = scaledSize(for: contextImage)
+        let questionSize = scaledSize(for: questionImage)
+        guard contextSize != .zero, questionSize != .zero else { return nil }
+
+        let totalHeight =
+            sidePadding +
+            labelHeight +
+            contextSize.height +
+            sectionGap +
+            labelHeight +
+            questionSize.height +
+            sidePadding
+
+        let rendererFormat = UIGraphicsImageRendererFormat()
+        rendererFormat.scale = 1
+        rendererFormat.opaque = true
+
+        let renderer = UIGraphicsImageRenderer(
+            size: CGSize(width: canvasWidth, height: totalHeight),
+            format: rendererFormat
+        )
+
+        let composite = renderer.image { context in
+            UIColor.white.setFill()
+            context.fill(
+                CGRect(x: 0, y: 0, width: canvasWidth, height: totalHeight)
+            )
+
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .left
+
+            let labelAttributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 30, weight: .bold),
+                .foregroundColor: UIColor.black,
+                .paragraphStyle: paragraph
+            ]
+
+            var y = sidePadding
+
+            NSString(
+                string: "CONTEXT / REFERENCE — DO NOT ANSWER"
+            ).draw(
+                in: CGRect(
+                    x: sidePadding,
+                    y: y,
+                    width: contentWidth,
+                    height: labelHeight
+                ),
+                withAttributes: labelAttributes
+            )
+
+            y += labelHeight
+            contextImage.draw(
+                in: CGRect(
+                    x: sidePadding,
+                    y: y,
+                    width: contextSize.width,
+                    height: contextSize.height
+                )
+            )
+
+            y += contextSize.height + sectionGap
+
+            NSString(
+                string: "QUESTION — ANSWER THIS SECTION"
+            ).draw(
+                in: CGRect(
+                    x: sidePadding,
+                    y: y,
+                    width: contentWidth,
+                    height: labelHeight
+                ),
+                withAttributes: labelAttributes
+            )
+
+            y += labelHeight
+            questionImage.draw(
+                in: CGRect(
+                    x: sidePadding,
+                    y: y,
+                    width: questionSize.width,
+                    height: questionSize.height
+                )
+            )
+        }
+
+        return composite.jpegData(compressionQuality: 0.78)
     }
 
     private func sendReadyIfPossible() {
