@@ -1,7 +1,10 @@
 // JARVIS Reader: WhatsApp -> Gemini Vision -> WhatsApp
-// Supabase Edge Function. No database is required.
+// Two-photo flow:
+//   1) First image is saved as context.
+//   2) Second image is treated as the question and sent to Gemini with the context image.
 
 const encoder = new TextEncoder();
+const CONTEXT_TTL_MS = 10 * 60 * 1000;
 
 type WhatsAppMessage = {
   from?: string;
@@ -24,6 +27,17 @@ type WhatsAppValue = {
 type ImageJob = {
   message: WhatsAppMessage;
   value: WhatsAppValue;
+};
+
+type PhotoSession = {
+  sender: string;
+  context_media_id: string | null;
+  context_mime_type: string | null;
+  context_caption: string | null;
+  context_message_id: string | null;
+  context_created_at: string | null;
+  last_question_message_id: string | null;
+  updated_at: string;
 };
 
 function env(name: string, required = true): string {
@@ -126,6 +140,136 @@ async function getWhatsAppMedia(mediaId: string): Promise<{ bytes: Uint8Array; m
   return { bytes, mimeType };
 }
 
+function supabaseAdminKey(): string {
+  const secretKeys = env("SUPABASE_SECRET_KEYS", false);
+  if (secretKeys) {
+    try {
+      const parsed = JSON.parse(secretKeys);
+      if (typeof parsed?.default === "string" && parsed.default.trim()) {
+        return parsed.default.trim();
+      }
+    } catch {
+      // Fall back to the legacy hosted Edge Function secret below.
+    }
+  }
+
+  return env("SUPABASE_SERVICE_ROLE_KEY");
+}
+
+function supabaseRestHeaders(): Record<string, string> {
+  const key = supabaseAdminKey();
+  const headers: Record<string, string> = {
+    apikey: key,
+    "Content-Type": "application/json",
+  };
+
+  // New sb_secret_* keys must not be sent as Bearer JWTs.
+  if (!key.startsWith("sb_secret_")) {
+    headers.Authorization = `Bearer ${key}`;
+  }
+
+  return headers;
+}
+
+function photoSessionUrl(sender = ""): URL {
+  const url = new URL("/rest/v1/jarvis_photo_sessions", env("SUPABASE_URL"));
+  if (sender) url.searchParams.set("sender", `eq.${sender}`);
+  return url;
+}
+
+async function getPhotoSession(sender: string): Promise<PhotoSession | null> {
+  const url = photoSessionUrl(sender);
+  url.searchParams.set(
+    "select",
+    "sender,context_media_id,context_mime_type,context_caption,context_message_id,context_created_at,last_question_message_id,updated_at",
+  );
+  url.searchParams.set("limit", "1");
+
+  const response = await fetch(url, {
+    headers: supabaseRestHeaders(),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Photo session lookup failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`,
+    );
+  }
+
+  const rows = await response.json();
+  return Array.isArray(rows) && rows.length ? rows[0] as PhotoSession : null;
+}
+
+async function saveContext(
+  sender: string,
+  mediaId: string,
+  mimeType: string,
+  caption: string,
+  messageId: string,
+  lastQuestionMessageId: string | null,
+): Promise<void> {
+  const url = photoSessionUrl();
+  url.searchParams.set("on_conflict", "sender");
+
+  const now = new Date().toISOString();
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...supabaseRestHeaders(),
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify({
+      sender,
+      context_media_id: mediaId,
+      context_mime_type: mimeType || null,
+      context_caption: caption || null,
+      context_message_id: messageId || null,
+      context_created_at: now,
+      last_question_message_id: lastQuestionMessageId,
+      updated_at: now,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Context save failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`,
+    );
+  }
+}
+
+async function completePhotoSession(sender: string, questionMessageId: string): Promise<void> {
+  const url = photoSessionUrl(sender);
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      ...supabaseRestHeaders(),
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({
+      context_media_id: null,
+      context_mime_type: null,
+      context_caption: null,
+      context_created_at: null,
+      last_question_message_id: questionMessageId || null,
+      updated_at: new Date().toISOString(),
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Photo session completion failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`,
+    );
+  }
+}
+
+function isFreshContext(session: PhotoSession | null): boolean {
+  if (!session?.context_media_id || !session.context_created_at) return false;
+  const createdAt = new Date(session.context_created_at).getTime();
+  return Number.isFinite(createdAt) && Date.now() - createdAt <= CONTEXT_TTL_MS;
+}
+
 function extractGeminiText(payload: any): string {
   const parts = payload?.candidates?.[0]?.content?.parts || [];
   return parts
@@ -135,19 +279,29 @@ function extractGeminiText(payload: any): string {
     .trim();
 }
 
-async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
+async function askGemini(
+  contextBytes: Uint8Array,
+  contextMimeType: string,
+  questionBytes: Uint8Array,
+  questionMimeType: string,
+  contextCaption = "",
+  questionCaption = "",
+): Promise<string> {
   const apiKey = env("GEMINI_API_KEY");
   const model = env("GEMINI_MODEL", false) || "gemini-2.5-flash";
 
   const prompt = [
-    "Analyze the attached image for a studying/homework workflow where AI assistance is allowed.",
-    "Read all clearly visible text yourself; do not require a separate OCR step.",
-    "If the image contains one or more questions, answer them accurately and concisely.",
+    "This is a two-image studying/homework workflow where AI assistance is allowed.",
+    "IMAGE 1 is CONTEXT / REFERENCE MATERIAL. IMAGE 2 contains the QUESTION to answer.",
+    "Read all clearly visible text, tables, graphs, diagrams, formulas, and labels in both images yourself.",
+    "Use IMAGE 1 when it is relevant to interpreting or solving IMAGE 2.",
+    "Answer the question from IMAGE 2 accurately and concisely.",
     "For multiple-choice questions, start with the choice letter and answer text, then add at most one short explanation when useful.",
-    "If there are multiple questions, number the answers in the same order as the image.",
-    "If there is no clear question, briefly state the important visible text or what the image shows.",
+    "If IMAGE 2 contains multiple questions, number the answers in the same order.",
+    "If the question cannot be answered from the visible information, say exactly what is missing rather than guessing.",
     "Keep the response compact because it will be read on smart glasses.",
-    caption ? `The sender included this caption: ${caption}` : "",
+    contextCaption ? `Context caption: ${contextCaption}` : "",
+    questionCaption ? `Question caption: ${questionCaption}` : "",
   ].filter(Boolean).join("\n");
 
   const response = await fetch(
@@ -163,7 +317,20 @@ async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Pro
           {
             role: "user",
             parts: [
-              { inline_data: { mime_type: mimeType, data: bytesToBase64(bytes) } },
+              { text: "IMAGE 1 — CONTEXT / REFERENCE" },
+              {
+                inline_data: {
+                  mime_type: contextMimeType,
+                  data: bytesToBase64(contextBytes),
+                },
+              },
+              { text: "IMAGE 2 — QUESTION" },
+              {
+                inline_data: {
+                  mime_type: questionMimeType,
+                  data: bytesToBase64(questionBytes),
+                },
+              },
               { text: prompt },
             ],
           },
@@ -178,7 +345,9 @@ async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Pro
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`Gemini failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`);
+    throw new Error(
+      `Gemini failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`,
+    );
   }
 
   const data = await response.json();
@@ -208,7 +377,9 @@ async function sendWhatsAppText(phoneNumberId: string, to: string, text: string)
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`WhatsApp reply failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`);
+    throw new Error(
+      `WhatsApp reply failed: ${response.status}${detail ? ` ${detail.slice(0, 250)}` : ""}`,
+    );
   }
 }
 
@@ -217,6 +388,9 @@ async function processImageJob(job: ImageJob): Promise<void> {
   const allowed = normalizePhone(env("ALLOWED_WHATSAPP_NUMBER", false));
   const phoneNumberId = job.value.metadata?.phone_number_id || "";
   const mediaId = job.message.image?.id || "";
+  const messageId = job.message.id || "";
+  const imageMimeType = job.message.image?.mime_type || "image/jpeg";
+  const imageCaption = job.message.image?.caption || "";
 
   if (!from || !phoneNumberId || !mediaId) return;
 
@@ -226,18 +400,59 @@ async function processImageJob(job: ImageJob): Promise<void> {
   }
 
   try {
-    const { bytes, mimeType } = await getWhatsAppMedia(mediaId);
-    const answer = await askGemini(bytes, mimeType, job.message.image?.caption || "");
+    const session = await getPhotoSession(from);
+
+    // Ignore webhook retries for an image we have already accepted or completed.
+    if (
+      messageId &&
+      (messageId === session?.context_message_id ||
+        messageId === session?.last_question_message_id)
+    ) {
+      console.log(`Ignoring duplicate WhatsApp image message ${messageId}`);
+      return;
+    }
+
+    if (!isFreshContext(session)) {
+      await saveContext(
+        from,
+        mediaId,
+        imageMimeType,
+        imageCaption,
+        messageId,
+        session?.last_question_message_id || null,
+      );
+      await sendWhatsAppText(
+        phoneNumberId,
+        from,
+        "CONTEXT SAVED · Take/send the question photo.",
+      );
+      return;
+    }
+
+    const [contextImage, questionImage] = await Promise.all([
+      getWhatsAppMedia(session!.context_media_id!),
+      getWhatsAppMedia(mediaId),
+    ]);
+
+    const answer = await askGemini(
+      contextImage.bytes,
+      contextImage.mimeType || session!.context_mime_type || "image/jpeg",
+      questionImage.bytes,
+      questionImage.mimeType,
+      session!.context_caption || "",
+      imageCaption,
+    );
+
     await sendWhatsAppText(phoneNumberId, from, answer);
+    await completePhotoSession(from, messageId);
   } catch (error) {
     console.error("JARVIS image processing failed", error);
 
-    // If media/Gemini fails, make one best-effort attempt to surface the failure in WhatsApp.
     try {
       await sendWhatsAppText(
         phoneNumberId,
         from,
-        "JARVIS couldn't process that image. Try sending it again.",
+        "JARVIS couldn't process that photo pair. If the context was already saved, resend the question photo.",
       );
     } catch (replyError) {
       console.error("Could not send JARVIS failure reply", replyError);
@@ -282,7 +497,7 @@ Deno.serve(async (req: Request) => {
     const payload = JSON.parse(rawBody);
     const jobs = collectImageJobs(payload);
 
-    // Acknowledge Meta immediately; Gemini/media work continues in the background.
+    // Acknowledge Meta immediately; media/Gemini work continues after the response.
     for (const job of jobs) {
       EdgeRuntime.waitUntil(processImageJob(job));
     }
