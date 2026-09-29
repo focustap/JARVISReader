@@ -281,6 +281,8 @@ final class JARVISController: ObservableObject {
     }
 
     func captureAndAsk() {
+        contextImageData = nil
+        contextPhotoReady = false
         beginCapture(.single)
     }
 
