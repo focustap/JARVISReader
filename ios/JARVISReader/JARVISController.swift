@@ -33,6 +33,12 @@ struct JARVISDeviceInfo: Identifiable {
     }
 }
 
+private enum JARVISCaptureMode {
+    case single
+    case contextReference
+    case contextQuestion
+}
+
 @MainActor
 final class JARVISController: ObservableObject {
     @Published private(set) var registrationState = Wearables.shared.registrationState
@@ -48,6 +54,7 @@ final class JARVISController: ObservableObject {
     @Published private(set) var status = "Starting JARVIS…"
     @Published private(set) var lastAnswer = ""
     @Published private(set) var lastPhoto: UIImage?
+    @Published private(set) var contextPhotoReady = false
     @Published private(set) var isProcessing = false
     @Published private(set) var isRegistering = false
     @Published private(set) var isRequestingPermission = false
@@ -98,6 +105,8 @@ final class JARVISController: ObservableObject {
     private var lastStreamErrorDescription: String?
     private var pendingCameraSessionRecovery = false
     private var cameraRecoveryReason: String?
+    private var captureMode: JARVISCaptureMode = .single
+    private var contextImageData: Data?
 
     init(wearables: WearablesInterface = Wearables.shared) {
         self.wearables = wearables
@@ -272,12 +281,33 @@ final class JARVISController: ObservableObject {
     }
 
     func captureAndAsk() {
+        beginCapture(.single)
+    }
+
+    func startContextMode() {
+        guard !isProcessing else { return }
+        contextImageData = nil
+        contextPhotoReady = false
+        beginCapture(.contextReference)
+    }
+
+    func captureContextQuestion() {
+        guard contextImageData != nil else {
+            status = "No context photo is saved. Capture the context first."
+            startContextMode()
+            return
+        }
+        beginCapture(.contextQuestion)
+    }
+
+    private func beginCapture(_ mode: JARVISCaptureMode) {
         guard isReady else {
             status = "Glasses are not ready yet."
             return
         }
         guard !isProcessing else { return }
 
+        captureMode = mode
         cameraRecoveryWatchdogTask?.cancel()
         cameraRecoveryWatchdogTask = nil
         isProcessing = true
@@ -287,8 +317,18 @@ final class JARVISController: ObservableObject {
         lastStreamErrorDescription = nil
         pendingCameraSessionRecovery = false
         cameraRecoveryReason = nil
-        status = "Starting camera for one photo…"
-        Task { await sendWorkingToDisplay("Starting camera…") }
+
+        switch mode {
+        case .single:
+            status = "Starting camera for one photo…"
+            Task { await sendWorkingToDisplay("Starting one-photo scan…") }
+        case .contextReference:
+            status = "Starting camera for context photo…"
+            Task { await sendWorkingToDisplay("Capture the context…") }
+        case .contextQuestion:
+            status = "Starting camera for question photo…"
+            Task { await sendWorkingToDisplay("Capture the question…") }
+        }
 
         startCameraForCapture()
     }
@@ -852,26 +892,71 @@ final class JARVISController: ObservableObject {
         stopCaptureCamera()
 
         lastPhoto = UIImage(data: data)
-        status = "Thinking…"
-        Task { await sendWorkingToDisplay("Thinking…") }
+        let uploadData = compressedJPEG(from: data) ?? data
 
-        Task {
-            let uploadData = compressedJPEG(from: data) ?? data
+        switch captureMode {
+        case .contextReference:
+            contextImageData = uploadData
+            contextPhotoReady = true
+            captureMode = .contextQuestion
+            isProcessing = false
+            status = "Context saved. Aim at the question, then capture the second photo."
+            Task { await sendContextSavedToDisplay() }
 
-            do {
-                let answer = try await backend.ask(
-                    imageData: uploadData,
-                    token: backendToken
-                )
-                lastAnswer = answer
+        case .contextQuestion:
+            guard let contextImageData else {
                 isProcessing = false
-                status = "Answer ready. Tap the glasses to scan again."
-                await sendAnswerToDisplay(answer)
-            } catch {
-                isProcessing = false
-                let message = error.localizedDescription
-                status = "AI error: \(message)"
-                await sendErrorToDisplay(message)
+                contextPhotoReady = false
+                status = "Context photo was lost. Start Context Mode again."
+                Task { await sendErrorToDisplay("Context photo was lost. Start Context Mode again.") }
+                return
+            }
+
+            status = "Thinking with context…"
+            Task { await sendWorkingToDisplay("Reading context + question…") }
+
+            Task {
+                do {
+                    let answer = try await backend.ask(
+                        contextImageData: contextImageData,
+                        questionImageData: uploadData,
+                        token: backendToken
+                    )
+                    self.contextImageData = nil
+                    contextPhotoReady = false
+                    captureMode = .single
+                    lastAnswer = answer
+                    isProcessing = false
+                    status = "Answer ready."
+                    await sendAnswerToDisplay(answer)
+                } catch {
+                    isProcessing = false
+                    let message = error.localizedDescription
+                    status = "AI error: \(message)"
+                    await sendErrorToDisplay(message)
+                }
+            }
+
+        case .single:
+            status = "Thinking…"
+            Task { await sendWorkingToDisplay("Thinking…") }
+
+            Task {
+                do {
+                    let answer = try await backend.ask(
+                        imageData: uploadData,
+                        token: backendToken
+                    )
+                    lastAnswer = answer
+                    isProcessing = false
+                    status = "Answer ready."
+                    await sendAnswerToDisplay(answer)
+                } catch {
+                    isProcessing = false
+                    let message = error.localizedDescription
+                    status = "AI error: \(message)"
+                    await sendErrorToDisplay(message)
+                }
             }
         }
     }
@@ -900,16 +985,39 @@ final class JARVISController: ObservableObject {
             guard let display else { return }
             do {
                 try await display.send(
-                    JARVISDisplayViews.ready { [weak self] in
-                        Task { @MainActor in
-                            self?.captureAndAsk()
+                    JARVISDisplayViews.ready(
+                        onSingleTap: { [weak self] in
+                            Task { @MainActor in
+                                self?.captureAndAsk()
+                            }
+                        },
+                        onContextTap: { [weak self] in
+                            Task { @MainActor in
+                                self?.startContextMode()
+                            }
                         }
-                    }
+                    )
                 )
             } catch {
                 status = "Display send error: \(error.localizedDescription)"
                 sentReadyCard = false
             }
+        }
+    }
+
+    private func sendContextSavedToDisplay() async {
+        guard let display, displayState == .started else { return }
+
+        do {
+            try await display.send(
+                JARVISDisplayViews.contextSaved { [weak self] in
+                    Task { @MainActor in
+                        self?.captureContextQuestion()
+                    }
+                }
+            )
+        } catch {
+            status = "Display context error: \(error.localizedDescription)"
         }
     }
 
@@ -928,11 +1036,19 @@ final class JARVISController: ObservableObject {
 
         do {
             try await display.send(
-                JARVISDisplayViews.answer(compactAnswer) { [weak self] in
-                    Task { @MainActor in
-                        self?.captureAndAsk()
+                JARVISDisplayViews.answer(
+                    compactAnswer,
+                    onSingleTap: { [weak self] in
+                        Task { @MainActor in
+                            self?.captureAndAsk()
+                        }
+                    },
+                    onContextTap: { [weak self] in
+                        Task { @MainActor in
+                            self?.startContextMode()
+                        }
                     }
-                }
+                )
             )
         } catch {
             status = "Display answer error: \(error.localizedDescription)"
@@ -942,12 +1058,21 @@ final class JARVISController: ObservableObject {
     private func sendErrorToDisplay(_ message: String) async {
         guard let display, displayState == .started else { return }
         let compactMessage = String(message.prefix(500))
+        let retryMode = captureMode
 
         do {
             try await display.send(
                 JARVISDisplayViews.error(compactMessage) { [weak self] in
                     Task { @MainActor in
-                        self?.captureAndAsk()
+                        guard let self else { return }
+                        switch retryMode {
+                        case .single:
+                            self.captureAndAsk()
+                        case .contextReference:
+                            self.startContextMode()
+                        case .contextQuestion:
+                            self.captureContextQuestion()
+                        }
                     }
                 }
             )
@@ -972,6 +1097,9 @@ final class JARVISController: ObservableObject {
         cameraRecoveryWatchdogTask = nil
         sentReadyCard = false
         isProcessing = false
+        contextImageData = nil
+        contextPhotoReady = false
+        captureMode = .single
         pendingCameraSessionRecovery = false
         cameraRecoveryReason = nil
         stopCaptureCamera()
@@ -991,6 +1119,9 @@ final class JARVISController: ObservableObject {
         cameraRecoveryWatchdogTask = nil
         sentReadyCard = false
         isProcessing = false
+        contextImageData = nil
+        contextPhotoReady = false
+        captureMode = .single
         pendingCameraSessionRecovery = false
         cameraRecoveryReason = nil
         stopCaptureCamera()
