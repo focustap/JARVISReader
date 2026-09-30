@@ -133,10 +133,9 @@ function wireSettings() {
   });
 }
 
-function launchShortcut(mode = "single") {
+function launchShortcut() {
   const name = encodeURIComponent(config.shortcutName || defaultConfig.shortcutName);
-  const shortcutInput = encodeURIComponent(mode === "context" ? "context" : "single");
-  location.href = `shortcuts://run-shortcut?name=${name}&input=text&text=${shortcutInput}`;
+  location.href = `shortcuts://run-shortcut?name=${name}`;
 }
 
 async function copyText(text, successMessage) {
@@ -169,10 +168,6 @@ async function copyShortcutSetup() {
     `Header apikey: ${SUPABASE_PUBLISHABLE_KEY}`,
     "Header Content-Type: application/json",
     'JSON body: {"answer":"<ChatGPT result>"}',
-    "",
-    "Shortcut Input mode:",
-    '  "single" = process one latest photo and send the answer immediately.',
-    '  "context" = collect a context photo, then a question photo, and answer using both.',
     "",
     "Use the ChatGPT result variable as the value of answer in Shortcuts."
   ].join("\n");
@@ -304,13 +299,12 @@ function renderPhone() {
       </div>
 
       <div class="hero">
-        <p class="state">PHOTO MODE</p>
+        <p class="state">LATEST GLASSES PHOTO</p>
         <p class="headline">Ready.</p>
-        <p class="subtext">Use one-photo mode for normal questions, or Context Mode when the question depends on a separate reference photo.</p>
+        <p class="subtext">Take a photo with your glasses, then process it with the JARVIS Reader Shortcut.</p>
       </div>
 
-      <button id="answerButton" class="primary">ONE PHOTO</button>
-      <button id="contextButton" class="secondary" style="margin-top:12px">CONTEXT MODE · 2 PHOTOS</button>
+      <button id="answerButton" class="primary">PROCESS LATEST PHOTO</button>
       <button id="sendTest" class="secondary" style="margin-top:12px">SEND TEST TO GLASSES</button>
       <button id="copyGlassesLink" class="secondary" style="margin-top:12px">COPY GLASSES LINK</button>
       <button id="copyShortcutSetup" class="secondary" style="margin-top:12px">COPY SHORTCUT SETUP</button>
@@ -330,8 +324,7 @@ function renderPhone() {
   `;
 
   document.querySelector("#settingsButton").addEventListener("click", openSettings);
-  document.querySelector("#answerButton").addEventListener("click", () => launchShortcut("single"));
-  document.querySelector("#contextButton").addEventListener("click", () => launchShortcut("context"));
+  document.querySelector("#answerButton").addEventListener("click", launchShortcut);
   document.querySelector("#sendTest").addEventListener("click", sendTestBroadcast);
   document.querySelector("#copyGlassesLink").addEventListener("click", copyGlassesLink);
   document.querySelector("#copyShortcutSetup").addEventListener("click", copyShortcutSetup);
