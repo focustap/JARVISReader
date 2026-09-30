@@ -17,7 +17,7 @@ struct JARVISBackendClient {
             case .server(let status, let message):
                 return "Backend error \(status): \(message)"
             case .emptyAnswer:
-                return "OpenAI returned an empty answer."
+                return "Gemini returned an empty answer."
             }
         }
     }
@@ -26,16 +26,6 @@ struct JARVISBackendClient {
         let ok: Bool?
         let answer: String?
         let error: String?
-    }
-
-    private struct ContextRequestBody: Encodable {
-        let contextImage: String
-        let questionImage: String
-
-        enum CodingKeys: String, CodingKey {
-            case contextImage = "context_image"
-            case questionImage = "question_image"
-        }
     }
 
     let endpoint: URL
@@ -52,41 +42,12 @@ struct JARVISBackendClient {
         request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
         request.setValue("native", forHTTPHeaderField: "X-JARVIS-Mode")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        applyToken(token, to: &request)
 
-        return try await perform(request)
-    }
-
-    func ask(
-        contextImageData: Data,
-        questionImageData: Data,
-        token: String = ""
-    ) async throws -> String {
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 60
-        request.httpBody = try JSONEncoder().encode(
-            ContextRequestBody(
-                contextImage: contextImageData.base64EncodedString(),
-                questionImage: questionImageData.base64EncodedString()
-            )
-        )
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("native-context", forHTTPHeaderField: "X-JARVIS-Mode")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        applyToken(token, to: &request)
-
-        return try await perform(request)
-    }
-
-    private func applyToken(_ token: String, to request: inout URLRequest) {
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedToken.isEmpty {
             request.setValue(trimmedToken, forHTTPHeaderField: "X-JARVIS-Token")
         }
-    }
 
-    private func perform(_ request: URLRequest) async throws -> String {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw BackendError.invalidResponse
