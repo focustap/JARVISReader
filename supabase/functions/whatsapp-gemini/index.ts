@@ -93,17 +93,6 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-
-  return bytes;
-}
-
 function graphUrl(path: string): string {
   const version = env("META_GRAPH_VERSION", false) || "v23.0";
   return `https://graph.facebook.com/${version}/${path.replace(/^\//, "")}`;
@@ -302,70 +291,6 @@ async function askOpenAI(bytes: Uint8Array, mimeType: string, caption = ""): Pro
   return plainTextForGlasses(answer);
 }
 
-async function askOpenAIWithContext(
-  contextBytes: Uint8Array,
-  questionBytes: Uint8Array,
-  mimeType = "image/jpeg",
-): Promise<string> {
-  const apiKey = env("OPENAI_API_KEY");
-  const model = env("OPENAI_MODEL", false) || "gpt-5.6-terra";
-
-  const prompt = [
-    "You are given exactly two images for a studying/homework workflow where AI assistance is allowed.",
-    "IMAGE 1 is CONTEXT / REFERENCE MATERIAL. IMAGE 2 is the QUESTION IMAGE.",
-    "Read both images completely before answering.",
-    "Use the context image to interpret tables, passages, graphs, instructions, formulas, answer choices, or other information referenced by the question image.",
-    "Answer EVERY clearly visible question in IMAGE 2 in order.",
-    "For multiple-choice questions, give one compact line per question in the format: 1. B - answer text.",
-    "For short-answer questions, give the shortest correct answer that is still useful.",
-    "If something required from IMAGE 1 or IMAGE 2 is unreadable or cut off, say 'unreadable' rather than guessing.",
-    "Think carefully before answering, especially for math, accounting, statistics, logic, and multi-step questions.",
-    "OUTPUT FORMAT RULE: return plain text only. Never use Markdown, LaTeX, TeX, code fences, math delimiters, or formatting commands.",
-    "Write all math in simple ASCII text and keep the final response compact because it will be read on smart glasses.",
-  ].join("\n");
-
-  const contextDataUrl = `data:${mimeType};base64,${bytesToBase64(contextBytes)}`;
-  const questionDataUrl = `data:${mimeType};base64,${bytesToBase64(questionBytes)}`;
-
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: "IMAGE 1 — CONTEXT / REFERENCE" },
-            { type: "input_image", image_url: contextDataUrl, detail: "high" },
-            { type: "input_text", text: "IMAGE 2 — QUESTION" },
-            { type: "input_image", image_url: questionDataUrl, detail: "high" },
-            { type: "input_text", text: prompt },
-          ],
-        },
-      ],
-      reasoning: { effort: "high" },
-      max_output_tokens: 6000,
-      store: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`OpenAI failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ""}`);
-  }
-
-  const data = await response.json();
-  const answer = extractOpenAIText(data);
-
-  if (!answer) throw new Error("OpenAI returned no text answer");
-
-  return plainTextForGlasses(answer);
-}
-
 async function askGemini(bytes: Uint8Array, mimeType: string, caption = ""): Promise<string> {
   const apiKey = env("GEMINI_API_KEY");
   const model = env("GEMINI_MODEL", false) || "gemini-3.1-flash-lite";
@@ -466,74 +391,6 @@ async function handleNativeImage(req: Request): Promise<Response> {
   }
 }
 
-async function handleNativeContext(req: Request): Promise<Response> {
-  const expectedToken = env("JARVIS_NATIVE_TOKEN", false);
-
-  if (expectedToken) {
-    const suppliedToken = (req.headers.get("x-jarvis-token") || "").trim();
-
-    if (suppliedToken !== expectedToken) {
-      return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-    }
-  }
-
-  let payload: any;
-  try {
-    payload = await req.json();
-  } catch {
-    return Response.json({ ok: false, error: "Expected a JSON body" }, { status: 400 });
-  }
-
-  const contextBase64 = typeof payload?.context_image === "string" ? payload.context_image : "";
-  const questionBase64 = typeof payload?.question_image === "string" ? payload.question_image : "";
-
-  if (!contextBase64 || !questionBase64) {
-    return Response.json(
-      { ok: false, error: "Both context_image and question_image are required" },
-      { status: 400 },
-    );
-  }
-
-  // Base64 is ~4/3 the binary size. Reject obviously oversized payloads before decoding.
-  const maxBase64Length = 12 * 1024 * 1024;
-  if (
-    contextBase64.length > maxBase64Length ||
-    questionBase64.length > maxBase64Length
-  ) {
-    return Response.json({ ok: false, error: "One of the images is too large" }, { status: 413 });
-  }
-
-  let contextBytes: Uint8Array;
-  let questionBytes: Uint8Array;
-
-  try {
-    contextBytes = base64ToBytes(contextBase64);
-    questionBytes = base64ToBytes(questionBase64);
-  } catch {
-    return Response.json({ ok: false, error: "Invalid base64 image data" }, { status: 400 });
-  }
-
-  if (!contextBytes.length || !questionBytes.length) {
-    return Response.json({ ok: false, error: "One of the images was empty" }, { status: 400 });
-  }
-
-  if (
-    contextBytes.length > 8 * 1024 * 1024 ||
-    questionBytes.length > 8 * 1024 * 1024
-  ) {
-    return Response.json({ ok: false, error: "One of the images is too large" }, { status: 413 });
-  }
-
-  try {
-    const answer = await askOpenAIWithContext(contextBytes, questionBytes);
-    return Response.json({ ok: true, answer });
-  } catch (error) {
-    console.error("Native JARVIS context request failed", error);
-    const message = error instanceof Error ? error.message : "Unknown OpenAI error";
-    return Response.json({ ok: false, error: message }, { status: 502 });
-  }
-}
-
 async function sendWhatsAppText(phoneNumberId: string, to: string, text: string): Promise<void> {
   const accessToken = env("WHATSAPP_ACCESS_TOKEN");
   const body = text.length > 3900 ? `${text.slice(0, 3897)}...` : text;
@@ -592,16 +449,11 @@ async function processImageJob(job: ImageJob): Promise<void> {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "POST") {
-    const jarvisMode = (req.headers.get("x-jarvis-mode") || "").toLowerCase();
-
-    if (jarvisMode === "native") {
-      return handleNativeImage(req);
-    }
-
-    if (jarvisMode === "native-context") {
-      return handleNativeContext(req);
-    }
+  if (
+    req.method === "POST" &&
+    (req.headers.get("x-jarvis-mode") || "").toLowerCase() === "native"
+  ) {
+    return handleNativeImage(req);
   }
 
   if (req.method === "GET") {
