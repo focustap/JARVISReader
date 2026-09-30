@@ -33,12 +33,6 @@ struct JARVISDeviceInfo: Identifiable {
     }
 }
 
-private enum JARVISCaptureMode {
-    case single
-    case contextReference
-    case contextQuestion
-}
-
 @MainActor
 final class JARVISController: ObservableObject {
     @Published private(set) var registrationState = Wearables.shared.registrationState
@@ -54,7 +48,6 @@ final class JARVISController: ObservableObject {
     @Published private(set) var status = "Starting JARVIS…"
     @Published private(set) var lastAnswer = ""
     @Published private(set) var lastPhoto: UIImage?
-    @Published private(set) var contextPhotoReady = false
     @Published private(set) var isProcessing = false
     @Published private(set) var isRegistering = false
     @Published private(set) var isRequestingPermission = false
@@ -105,8 +98,6 @@ final class JARVISController: ObservableObject {
     private var lastStreamErrorDescription: String?
     private var pendingCameraSessionRecovery = false
     private var cameraRecoveryReason: String?
-    private var captureMode: JARVISCaptureMode = .single
-    private var contextImageData: Data?
 
     init(wearables: WearablesInterface = Wearables.shared) {
         self.wearables = wearables
@@ -281,35 +272,12 @@ final class JARVISController: ObservableObject {
     }
 
     func captureAndAsk() {
-        contextImageData = nil
-        contextPhotoReady = false
-        beginCapture(.single)
-    }
-
-    func startContextMode() {
-        guard !isProcessing else { return }
-        contextImageData = nil
-        contextPhotoReady = false
-        beginCapture(.contextReference)
-    }
-
-    func captureContextQuestion() {
-        guard contextImageData != nil else {
-            status = "No context photo is saved. Capture the context first."
-            startContextMode()
-            return
-        }
-        beginCapture(.contextQuestion)
-    }
-
-    private func beginCapture(_ mode: JARVISCaptureMode) {
         guard isReady else {
             status = "Glasses are not ready yet."
             return
         }
         guard !isProcessing else { return }
 
-        captureMode = mode
         cameraRecoveryWatchdogTask?.cancel()
         cameraRecoveryWatchdogTask = nil
         isProcessing = true
@@ -319,18 +287,8 @@ final class JARVISController: ObservableObject {
         lastStreamErrorDescription = nil
         pendingCameraSessionRecovery = false
         cameraRecoveryReason = nil
-
-        switch mode {
-        case .single:
-            status = "Starting camera for one photo…"
-            Task { await sendWorkingToDisplay("Starting one-photo scan…") }
-        case .contextReference:
-            status = "Starting camera for context photo…"
-            Task { await sendWorkingToDisplay("Capture the context…") }
-        case .contextQuestion:
-            status = "Starting camera for question photo…"
-            Task { await sendWorkingToDisplay("Capture the question…") }
-        }
+        status = "Starting camera for one photo…"
+        Task { await sendWorkingToDisplay("Starting camera…") }
 
         startCameraForCapture()
     }
@@ -894,84 +852,26 @@ final class JARVISController: ObservableObject {
         stopCaptureCamera()
 
         lastPhoto = UIImage(data: data)
-        let uploadData = compressedJPEG(from: data) ?? data
+        status = "Thinking…"
+        Task { await sendWorkingToDisplay("Thinking…") }
 
-        switch captureMode {
-        case .contextReference:
-            contextImageData = uploadData
-            contextPhotoReady = true
-            captureMode = .contextQuestion
-            isProcessing = false
-            status = "Context saved. Aim at the question, then capture the second photo."
-            Task { await sendContextSavedToDisplay() }
+        Task {
+            let uploadData = compressedJPEG(from: data) ?? data
 
-        case .contextQuestion:
-            guard let contextImageData else {
+            do {
+                let answer = try await backend.ask(
+                    imageData: uploadData,
+                    token: backendToken
+                )
+                lastAnswer = answer
                 isProcessing = false
-                contextPhotoReady = false
-                status = "Context photo was lost. Start Context Mode again."
-                Task { await sendErrorToDisplay("Context photo was lost. Start Context Mode again.") }
-                return
-            }
-
-            status = "Thinking with context…"
-            Task { await sendWorkingToDisplay("Reading context + question…") }
-
-            Task {
-                do {
-                    guard let combinedImageData = contextCompositeJPEG(
-                        contextData: contextImageData,
-                        questionData: uploadData
-                    ) else {
-                        throw NSError(
-                            domain: "JARVISReader",
-                            code: 2,
-                            userInfo: [
-                                NSLocalizedDescriptionKey:
-                                    "Could not combine the context and question photos."
-                            ]
-                        )
-                    }
-
-                    let answer = try await backend.ask(
-                        imageData: combinedImageData,
-                        token: backendToken
-                    )
-                    self.contextImageData = nil
-                    contextPhotoReady = false
-                    captureMode = .single
-                    lastAnswer = answer
-                    isProcessing = false
-                    status = "Answer ready."
-                    await sendAnswerToDisplay(answer)
-                } catch {
-                    isProcessing = false
-                    let message = error.localizedDescription
-                    status = "AI error: \(message)"
-                    await sendErrorToDisplay(message)
-                }
-            }
-
-        case .single:
-            status = "Thinking…"
-            Task { await sendWorkingToDisplay("Thinking…") }
-
-            Task {
-                do {
-                    let answer = try await backend.ask(
-                        imageData: uploadData,
-                        token: backendToken
-                    )
-                    lastAnswer = answer
-                    isProcessing = false
-                    status = "Answer ready."
-                    await sendAnswerToDisplay(answer)
-                } catch {
-                    isProcessing = false
-                    let message = error.localizedDescription
-                    status = "AI error: \(message)"
-                    await sendErrorToDisplay(message)
-                }
+                status = "Answer ready. Tap the glasses to scan again."
+                await sendAnswerToDisplay(answer)
+            } catch {
+                isProcessing = false
+                let message = error.localizedDescription
+                status = "AI error: \(message)"
+                await sendErrorToDisplay(message)
             }
         }
     }
@@ -992,122 +892,6 @@ final class JARVISController: ObservableObject {
         return image.jpegData(compressionQuality: 0.78)
     }
 
-    private func contextCompositeJPEG(
-        contextData: Data,
-        questionData: Data
-    ) -> Data? {
-        guard let contextImage = UIImage(data: contextData),
-              let questionImage = UIImage(data: questionData) else {
-            return nil
-        }
-
-        let canvasWidth: CGFloat = 1400
-        let sidePadding: CGFloat = 36
-        let labelHeight: CGFloat = 72
-        let sectionGap: CGFloat = 28
-        let contentWidth = canvasWidth - (sidePadding * 2)
-
-        func scaledSize(for image: UIImage) -> CGSize {
-            guard image.size.width > 0, image.size.height > 0 else {
-                return .zero
-            }
-
-            let scale = min(1, contentWidth / image.size.width)
-            return CGSize(
-                width: image.size.width * scale,
-                height: image.size.height * scale
-            )
-        }
-
-        let contextSize = scaledSize(for: contextImage)
-        let questionSize = scaledSize(for: questionImage)
-        guard contextSize != .zero, questionSize != .zero else { return nil }
-
-        let totalHeight =
-            sidePadding +
-            labelHeight +
-            contextSize.height +
-            sectionGap +
-            labelHeight +
-            questionSize.height +
-            sidePadding
-
-        let rendererFormat = UIGraphicsImageRendererFormat()
-        rendererFormat.scale = 1
-        rendererFormat.opaque = true
-
-        let renderer = UIGraphicsImageRenderer(
-            size: CGSize(width: canvasWidth, height: totalHeight),
-            format: rendererFormat
-        )
-
-        let composite = renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(
-                CGRect(x: 0, y: 0, width: canvasWidth, height: totalHeight)
-            )
-
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .left
-
-            let labelAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 30, weight: .bold),
-                .foregroundColor: UIColor.black,
-                .paragraphStyle: paragraph
-            ]
-
-            var y = sidePadding
-
-            NSString(
-                string: "CONTEXT / REFERENCE — DO NOT ANSWER"
-            ).draw(
-                in: CGRect(
-                    x: sidePadding,
-                    y: y,
-                    width: contentWidth,
-                    height: labelHeight
-                ),
-                withAttributes: labelAttributes
-            )
-
-            y += labelHeight
-            contextImage.draw(
-                in: CGRect(
-                    x: sidePadding,
-                    y: y,
-                    width: contextSize.width,
-                    height: contextSize.height
-                )
-            )
-
-            y += contextSize.height + sectionGap
-
-            NSString(
-                string: "QUESTION — ANSWER THIS SECTION"
-            ).draw(
-                in: CGRect(
-                    x: sidePadding,
-                    y: y,
-                    width: contentWidth,
-                    height: labelHeight
-                ),
-                withAttributes: labelAttributes
-            )
-
-            y += labelHeight
-            questionImage.draw(
-                in: CGRect(
-                    x: sidePadding,
-                    y: y,
-                    width: questionSize.width,
-                    height: questionSize.height
-                )
-            )
-        }
-
-        return composite.jpegData(compressionQuality: 0.78)
-    }
-
     private func sendReadyIfPossible() {
         guard isReady, camera == nil, !isProcessing, !sentReadyCard else { return }
         sentReadyCard = true
@@ -1116,39 +900,16 @@ final class JARVISController: ObservableObject {
             guard let display else { return }
             do {
                 try await display.send(
-                    JARVISDisplayViews.ready(
-                        onSingleTap: { [weak self] in
-                            Task { @MainActor in
-                                self?.captureAndAsk()
-                            }
-                        },
-                        onContextTap: { [weak self] in
-                            Task { @MainActor in
-                                self?.startContextMode()
-                            }
+                    JARVISDisplayViews.ready { [weak self] in
+                        Task { @MainActor in
+                            self?.captureAndAsk()
                         }
-                    )
+                    }
                 )
             } catch {
                 status = "Display send error: \(error.localizedDescription)"
                 sentReadyCard = false
             }
-        }
-    }
-
-    private func sendContextSavedToDisplay() async {
-        guard let display, displayState == .started else { return }
-
-        do {
-            try await display.send(
-                JARVISDisplayViews.contextSaved { [weak self] in
-                    Task { @MainActor in
-                        self?.captureContextQuestion()
-                    }
-                }
-            )
-        } catch {
-            status = "Display context error: \(error.localizedDescription)"
         }
     }
 
@@ -1167,19 +928,11 @@ final class JARVISController: ObservableObject {
 
         do {
             try await display.send(
-                JARVISDisplayViews.answer(
-                    compactAnswer,
-                    onSingleTap: { [weak self] in
-                        Task { @MainActor in
-                            self?.captureAndAsk()
-                        }
-                    },
-                    onContextTap: { [weak self] in
-                        Task { @MainActor in
-                            self?.startContextMode()
-                        }
+                JARVISDisplayViews.answer(compactAnswer) { [weak self] in
+                    Task { @MainActor in
+                        self?.captureAndAsk()
                     }
-                )
+                }
             )
         } catch {
             status = "Display answer error: \(error.localizedDescription)"
@@ -1189,21 +942,12 @@ final class JARVISController: ObservableObject {
     private func sendErrorToDisplay(_ message: String) async {
         guard let display, displayState == .started else { return }
         let compactMessage = String(message.prefix(500))
-        let retryMode = captureMode
 
         do {
             try await display.send(
                 JARVISDisplayViews.error(compactMessage) { [weak self] in
                     Task { @MainActor in
-                        guard let self else { return }
-                        switch retryMode {
-                        case .single:
-                            self.captureAndAsk()
-                        case .contextReference:
-                            self.startContextMode()
-                        case .contextQuestion:
-                            self.captureContextQuestion()
-                        }
+                        self?.captureAndAsk()
                     }
                 }
             )
@@ -1228,9 +972,6 @@ final class JARVISController: ObservableObject {
         cameraRecoveryWatchdogTask = nil
         sentReadyCard = false
         isProcessing = false
-        contextImageData = nil
-        contextPhotoReady = false
-        captureMode = .single
         pendingCameraSessionRecovery = false
         cameraRecoveryReason = nil
         stopCaptureCamera()
@@ -1250,9 +991,6 @@ final class JARVISController: ObservableObject {
         cameraRecoveryWatchdogTask = nil
         sentReadyCard = false
         isProcessing = false
-        contextImageData = nil
-        contextPhotoReady = false
-        captureMode = .single
         pendingCameraSessionRecovery = false
         cameraRecoveryReason = nil
         stopCaptureCamera()
