@@ -48,7 +48,9 @@ struct ContentView: View {
             }
 
             if controller.isReady {
-                Text("Use Capture & Ask on your glasses. The answer will appear there too.")
+                Text(controller.contextPhotoReady
+                     ? "Context saved. Aim at the question and capture the second photo."
+                     : "Choose One Photo for a normal scan, or Context Mode when the question depends on a separate reference.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -79,12 +81,26 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(controller.isRequestingPermission)
             } else if controller.isReady {
-                Text(controller.isProcessing ? "JARVIS is thinking…" : "Capture & Ask is ready on your glasses.")
+                Text(controller.isProcessing
+                     ? "JARVIS is working…"
+                     : (controller.contextPhotoReady
+                        ? "Context saved — capture the question."
+                        : "Choose a capture mode."))
                     .font(.headline)
                     .multilineTextAlignment(.center)
 
-                Button(controller.isProcessing ? "Thinking…" : "Capture from iPhone (fallback)") {
+                Button("One Photo") {
                     controller.captureAndAsk()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(controller.isProcessing)
+
+                Button(controller.contextPhotoReady ? "Capture Question" : "Context Mode · 2 Photos") {
+                    if controller.contextPhotoReady {
+                        controller.captureContextQuestion()
+                    } else {
+                        controller.startContextMode()
+                    }
                 }
                 .buttonStyle(.bordered)
                 .disabled(controller.isProcessing)
