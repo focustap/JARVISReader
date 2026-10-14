@@ -1,10 +1,10 @@
-name: Native iOS Test Build
+name: JARVIS Graph Lab iOS Build
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - shortcuts-chatgpt-test
+      - graph-display-experiment
     paths:
       - "ios/**"
       - "jarvisicon.png"
@@ -93,13 +93,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
-          zip -qry JARVISReader-Test-unsigned.ipa Payload
+          zip -qry JARVISGraphLab-unsigned.ipa Payload
 
       - name: Upload test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: JARVISReader-Test-unsigned-ipa
-          path: ${{ runner.temp }}/JARVISReader-Test-unsigned.ipa
+          name: JARVISGraphLab-unsigned-ipa
+          path: ${{ runner.temp }}/JARVISGraphLab-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -107,7 +107,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-test-build-log
+          name: ios-graph-build-log
           path: ${{ runner.temp }}/xcodebuild.log
           if-no-files-found: ignore
           retention-days: 7
