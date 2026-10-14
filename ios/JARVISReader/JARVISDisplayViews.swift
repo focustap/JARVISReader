@@ -70,6 +70,7 @@ enum JARVISDisplayViews {
         .background(.card)
     }
 
+    @MainActor
     static func graphDemo(onDone: @escaping @Sendable () -> Void) -> some DisplayableView {
         FlexBox(direction: .column, spacing: 8) {
             Text("Demand vs. quantity demanded", style: .heading)
