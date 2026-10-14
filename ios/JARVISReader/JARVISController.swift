@@ -286,6 +286,32 @@ final class JARVISController: ObservableObject {
         beginCapture(.single)
     }
 
+    // Only available in JARVIS Graph Lab. This bypasses the AI backend so we
+    // can verify actual image rendering on the glasses before building AI graphs.
+    func showGraphDemo() {
+        guard isReady, !isProcessing, let display, displayState == .started else {
+            status = "Connect the glasses before displaying a graph."
+            return
+        }
+
+        sentReadyCard = false
+        Task {
+            do {
+                try await display.send(
+                    JARVISDisplayViews.graphDemo(onDone: { [weak self] in
+                        Task { @MainActor in
+                            self?.sendReadyIfPossible()
+                        }
+                    })
+                )
+                status = "Demand graph displayed on glasses."
+            } catch {
+                status = "Graph display error: \\(error.localizedDescription)"
+                sendReadyIfPossible()
+            }
+        }
+    }
+
     func startContextMode() {
         guard !isProcessing else { return }
         contextImageData = nil
