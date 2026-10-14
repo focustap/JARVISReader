@@ -1,4 +1,5 @@
 import MWDATDisplay
+import UIKit
 
 enum JARVISDisplayViews {
     static func ready(
@@ -66,6 +67,18 @@ enum JARVISDisplayViews {
             }
         }
         .padding(20)
+        .background(.card)
+    }
+
+    static func graphDemo(onDone: @escaping @Sendable () -> Void) -> some DisplayableView {
+        FlexBox(direction: .column, spacing: 8) {
+            Text("Demand vs. quantity demanded", style: .heading)
+            Image(image: JARVISGraphRenderer.milkDemandCurve(), sizePreset: .fill)
+            ButtonGroup {
+                Button(label: "Back to JARVIS", style: .secondary, onClick: onDone)
+            }
+        }
+        .padding(12)
         .background(.card)
     }
 }
