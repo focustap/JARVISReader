@@ -1,4 +1,4 @@
-# Experimental Shortcuts/ChatGPT test app. Stable native-ios remains untouched.
+# Independent graph experiment app. Keep shortcuts-chatgpt-test and native-ios unchanged.
 name: JARVISReader
 options:
   bundleIdPrefix: com.focustap
@@ -17,14 +17,14 @@ targets:
     info:
       path: JARVISReader/Info.plist
       properties:
-        CFBundleDisplayName: JARVIS Reader Test
-        CFBundleShortVersionString: "1.0.25"
-        CFBundleVersion: "25"
+        CFBundleDisplayName: JARVIS Graph Lab
+        CFBundleShortVersionString: "1.0.1"
+        CFBundleVersion: "1"
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
             CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
             CFBundleURLSchemes:
-              - jarvisreader-test
+              - jarvisgraphlab
         LSApplicationQueriesSchemes:
           - fb-viewapp
         UISupportedExternalAccessoryProtocols:
@@ -34,14 +34,14 @@ targets:
           - bluetooth-central
           - bluetooth-peripheral
           - external-accessory
-        NSBluetoothAlwaysUsageDescription: JARVIS Reader Test connects to your Meta glasses to capture images and show answers.
-        NSBluetoothPeripheralUsageDescription: JARVIS Reader Test uses Bluetooth to communicate with your Meta glasses.
-        NSLocalNetworkUsageDescription: JARVIS Reader Test uses the local network to communicate with your Meta glasses.
+        NSBluetoothAlwaysUsageDescription: JARVIS Graph Lab connects to your Meta glasses to capture images and show answers.
+        NSBluetoothPeripheralUsageDescription: JARVIS Graph Lab uses Bluetooth to communicate with your Meta glasses.
+        NSLocalNetworkUsageDescription: JARVIS Graph Lab uses the local network to communicate with your Meta glasses.
         NSBonjourServices:
           - _bonjour._tcp
         MWDAT:
           DAMEnabled: true
-          AppLinkURLScheme: jarvisreader-test://
+          AppLinkURLScheme: jarvisgraphlab://
           MetaAppID: "0"
           ClientToken: ""
           TeamID: CX3DNSA9YG
@@ -50,10 +50,10 @@ targets:
         UILaunchScreen: {}
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISReaderTest
+        PRODUCT_BUNDLE_IDENTIFIER: com.focustap.JARVISGraphLab
         PRODUCT_NAME: JARVISReader
-        MARKETING_VERSION: "1.0.25"
-        CURRENT_PROJECT_VERSION: "25"
+        MARKETING_VERSION: "1.0.1"
+        CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: 6.0
         TARGETED_DEVICE_FAMILY: "1"
