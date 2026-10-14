@@ -105,6 +105,12 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .disabled(controller.isProcessing)
 
+                Button("Show Demand Graph on Glasses") {
+                    controller.showGraphDemo()
+                }
+                .buttonStyle(.bordered)
+                .disabled(controller.isProcessing)
+
                 Button("Disconnect") {
                     controller.disconnect()
                 }
